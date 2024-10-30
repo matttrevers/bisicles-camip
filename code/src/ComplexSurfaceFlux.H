@@ -145,7 +145,55 @@ private:
   }
 
 };
+
+/*
+/// MJT - New Gaussian flux
+/// Applies a Gaussian blur operator to the flux defined in 'gauss.'
+
+class GaussianFlux : public SurfaceFlux
+{
+  SurfaceFlux* m_gauss;
+  Real m_alpha;
+  Real m_beta;
   
+public:
+  /// Gaussian convolution on a flux gauss and with a sigma input
+  GaussianFlux(SurfaceFlux* a_gauss, const Real& a_alpha, const Real& a_beta);
+
+  virtual ~GaussianFlux();
+
+  virtual SurfaceFlux* new_surfaceFlux();
+  
+  virtual void surfaceThicknessFlux(LevelData<FArrayBox>& a_flux,
+				    const AmrIceBase& a_amrIce, 
+				    int a_level, Real a_dt);
+
+private:
+  
+  // Disallowed for all the usual reasons
+  void operator=(const GaussianFlux& a_input)
+  {
+    MayDay::Error("invalid operator");
+  }
+
+  // Disallowed for all the usual reasons
+  GaussianFlux(const GaussianFlux& a_input)
+  {
+    MayDay::Error("invalid operator");
+  }
+
+  GaussianFlux()
+  {
+    MayDay::Error("invalid operator");
+  }
+
+protected:
+
+  ProblemDomain m_domain;
+  
+};*/
+ 
+ 
 /// Applies a different surface flux depending on the mask
 /**
    Applies a different surface fluxes for grounded and floating ice
@@ -158,7 +206,6 @@ private:
     - `A.B.C.floating = <valid SurfaceFlux type (optional, default ZeroFlux) >`
     - `A.B.C.openland = <valid SurfaceFlux type (optional, default ZeroFlux) >`
     - `A.B.C.opensea  = <valid SurfaceFlux type (optional, default ZeroFlux) >`
-    - `A.B.C.floating_check_ocean_connected = <bool, default false>`
 
  */
 class MaskedFlux : public SurfaceFlux
@@ -173,8 +220,7 @@ public:
      @param a_openLandFlux flux over ice free areas above sea level
    */
   MaskedFlux(SurfaceFlux* a_groundedIceFlux, SurfaceFlux* a_floatingIceFlux,
-	     SurfaceFlux* a_openSeaFlux, SurfaceFlux* a_openLandFlux,
-	     bool a_floating_check_ocean_connected);
+	     SurfaceFlux* a_openSeaFlux, SurfaceFlux* a_openLandFlux);
 
   virtual ~MaskedFlux(){};
 
@@ -190,7 +236,6 @@ protected:
   SurfaceFlux* m_floatingIceFlux;
   SurfaceFlux* m_openSeaFlux;
   SurfaceFlux* m_openLandFlux;
-  bool m_floating_check_ocean_connected;
   
 private:
   // Disallowed for all the usual reasons
@@ -647,6 +692,50 @@ private:
   }
 
   TargetThicknessFlux()
+  {
+    MayDay::Error("invalid operator");
+  }
+
+
+};
+
+
+class ConstantThicknessFlux : public SurfaceFlux
+{
+  
+  SurfaceFlux* m_constant;
+
+public:
+  /// Construct a normalized flux from a flux and an amplitude
+  /**
+     @param a_direction : defines the spatial pattern
+     @param a_amplitude : defines the amplitude
+   */
+  ConstantThicknessFlux(SurfaceFlux* a_constant);
+
+  virtual ~ConstantThicknessFlux();
+
+  virtual SurfaceFlux* new_surfaceFlux();
+
+  virtual void surfaceThicknessFlux(LevelData<FArrayBox>& a_flux,
+				    const AmrIceBase& a_amrIce, 
+				    int a_level, Real a_dt);
+
+  
+private:
+  // Disallowed for all the usual reasons
+  void operator=(const ConstantThicknessFlux& a_input)
+  {
+    MayDay::Error("invalid operator");
+  }
+
+  // Disallowed for all the usual reasons
+  ConstantThicknessFlux(const ConstantThicknessFlux& a_input)
+  {
+    MayDay::Error("invalid operator");
+  }
+
+  ConstantThicknessFlux()
   {
     MayDay::Error("invalid operator");
   }

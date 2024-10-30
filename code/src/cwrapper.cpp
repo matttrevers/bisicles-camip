@@ -513,7 +513,7 @@ void init_bisicles_instance(BisiclesWrapper& a_wrapper)
 	{
 	  g = a_wrapper.m_grounded_ice_basal_flux;
 	}
-      MaskedFlux* m = new MaskedFlux(g,f,f,g,true);
+      MaskedFlux* m = new MaskedFlux(g,f,f,g);
       AxbyFlux* ptr = new AxbyFlux(1.0, m , 1.0, basal_flux_ptr);
       amrObject.setBasalFlux(ptr); 
       delete(ptr);
@@ -1302,10 +1302,6 @@ void bisicles_new_instance(int *instance_key, const char *input_fname, MPI_Comm 
 
 #ifdef CH_USE_PETSC
   PETSC_COMM_WORLD = Chombo_MPI::comm;
-#ifndef PETSC_NULLPTR
-#define PETSC_NULLPTR PETSC_NULL
-#endif
-
   PetscInitialize(PETSC_NULL,PETSC_NULL,PETSC_NULL,PETSC_NULL);
 #endif
 

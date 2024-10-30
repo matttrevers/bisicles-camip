@@ -386,11 +386,11 @@ AmrIce::regrid()
 	    m_basalThicknessSource[lev] = 
 	      new LevelData<FArrayBox>(newDBL,   1, IntVect::Unit) ;
 
-	    if (m_calvedIceArea[lev] != NULL)
+	    if (m_volumeThicknessSource[lev] != NULL)
 	      {
-		delete m_calvedIceArea[lev];
+		delete m_volumeThicknessSource[lev];
 	      }
-	    m_calvedIceArea[lev] = 
+	    m_volumeThicknessSource[lev] = 
 	      new LevelData<FArrayBox>(newDBL,   1, IntVect::Unit) ;
 
 	    if (m_divThicknessFlux[lev] != NULL)
@@ -957,15 +957,14 @@ AmrIce::tagCellsLevel(IntVectSet& a_tags, int a_level)
 	}
     }
 
-  // tag cells where icefrac ~ 0.5
+  // tag cells where thickness goes to zero
   if (m_tagMargin)
     {
-      Real test = 0.4;
-      const LevelData<FArrayBox>& levelFrac = (*m_iceFrac[a_level]);
+      const LevelData<FArrayBox>& levelH = levelCS.getH();
       for (dit.begin(); dit.ok(); ++dit)
         {
           Box gridBox = levelGrids[dit];
-          const FArrayBox& frac = levelFrac[dit];
+          const FArrayBox& H = levelH[dit];
 
           for (BoxIterator bit(gridBox); bit.ok(); ++bit)
             {
@@ -977,14 +976,12 @@ AmrIce::tagCellsLevel(IntVectSet& a_tags, int a_level)
 		    {
 		      IntVect ivm = iv - BASISV(dir);
 		      IntVect ivp = iv + BASISV(dir);
-		      Real fm = 0.5 * (frac(iv) + frac(ivm));
-		      Real fp = 0.5 * (frac(iv) + frac(ivp));
-		      if ( Abs(fm - 0.5) < test)
+		      if ( (H(iv,0) > 0) && (H(ivm,0) < TINY_THICKNESS) )
 			{
 			  local_tags |= iv;
 			  local_tags |= ivm;
 			} // end if low-side margin
-		      if  ( Abs(fp - 0.5) < test)
+		      if ( (H(iv,0) > 0) && (H(ivp,0) < TINY_THICKNESS) )
 			{
 			  local_tags |= iv;
 			  local_tags |= ivp;

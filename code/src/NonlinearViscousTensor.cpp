@@ -3,7 +3,7 @@
 *      _______              __
 *     / ___/ /  ___  __ _  / /  ___
 *    / /__/ _ \/ _ \/  V \/ _ \/ _ \
-*    \___/_//_/\___/_/_/_/_.__/\__/
+*    \___/_//_/\___/_/_/_/_.__/\___/
 *    Please refer to Copyright.txt, in Chombo's root directory.
 */
 #endif
@@ -331,19 +331,9 @@ void IceNonlinearViscousTensor::setState(const Vector<LevelData<FArrayBox>*>& a_
 
 	      Box facebox = levelGrids[dit].surroundingNodes(dir);
 	      CH_assert(levelMu[dit][dir].min(facebox) >= 0.0);
-	      Real m_min_thickness = 0.0;
-	      ParmParse pp("JFNKSolver");
-	      pp.query("minThickness", m_min_thickness);
-	      FArrayBox hreg(faceH[dit][dir].box(), 1);
-	      hreg.copy(faceH[dit][dir]);
-	      FORT_MAXFAB1(CHF_FRA(hreg),
-			   CHF_CONST_REAL(m_min_thickness),
-			   CHF_BOX(faceH[dit][dir].box()));
 
-	      
-	      levelMu[dit][dir].mult(hreg, facebox, 0, 0, 1);
-              //levelMu[dit][dir].mult(faceH[dit][dir],
-              //                     levelMu[dit][dir].box(),0,0,1);
+              levelMu[dit][dir].mult(faceH[dit][dir],
+                                    levelMu[dit][dir].box(),0,0,1);
 	    
 	      FORT_MINFAB1(CHF_FRA(thisMu),
 	       		  CHF_CONST_REAL(m_muMax),

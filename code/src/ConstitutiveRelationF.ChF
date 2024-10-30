@@ -24,6 +24,9 @@ c ---------------------------------------------------------------
      &                          CHF_BOX[box])
 
       integer CHF_AUTOIX[i]
+      REAL_T limit
+
+      limit = 1.0d+2;
 
 c      CHF_AUTOMULTIDO[box; i]
 c        epsSqr(CHF_AUTOIX[i]) = derivs(CHF_AUTOIX[i],dudxcomp)**2
@@ -47,7 +50,11 @@ c slc:i think this is the correct strain rate invariant (see e.g MacAyeal 1996)
      &                    +0.25*(derivs(CHF_AUTOIX[i],dudycomp)
      &                          +derivs(CHF_AUTOIX[i],dvdxcomp))**2
 #endif 
-           
+
+c       epsSqr(CHF_AUTOIX[i]) = min(epsSqr(CHF_AUTOIX[i]),limit)
+
+
+
       CHF_ENDDO
 
 

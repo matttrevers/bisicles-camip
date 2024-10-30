@@ -487,15 +487,6 @@ void AMRDamage::computeDamageSource(Vector<LevelData<FArrayBox>* >& a_source,
 			      Real a_dt)
 {
  
-  
-  ParmParse pp("damage");
-  Real shear_alpha = -1.0;
-  pp.query("shear_alpha", shear_alpha);
-  Real shear_critical = 1.0e-10;
-  pp.query("shear_critical", shear_critical); 
-
-  Real max_shear = 0.0;
-  
   for (int lev = 0 ; lev <= m_finestLevel; lev++)
     {
       const LevelSigmaCS& levelCoords = *a_geometry[lev];
@@ -505,33 +496,21 @@ void AMRDamage::computeDamageSource(Vector<LevelData<FArrayBox>* >& a_source,
 	  FArrayBox& damage = (*a_damage[lev])[dit];
 	  const FArrayBox& smb = (*a_surfThickSource[lev])[dit];
 	  const FArrayBox& bmb = (*a_baseThickSource[lev])[dit];
-	  const FArrayBox& vt = (*a_visTensor[lev])[dit];
 	  const FArrayBox& thick = levelCoords.getH()[dit];
 	  for (BoxIterator bit(source.box());bit.ok();++bit)
 	    {
 	      const IntVect& iv = bit();
-	      Real surfDamageSource(0.);
+	      Real surfDamageSource;
+	      surfDamageSource = 0.0;
 	      if (smb(iv)<0.0){surfDamageSource = smb(iv);}
-	      Real baseDamageSource(0.);
+	      Real baseDamageSource;
+	      baseDamageSource = 0.0;
 	      if (bmb(iv)<0.0){baseDamageSource = bmb(iv);}
 	      //damage source removed by surface and basal melting
-
-	     
 	      source(iv) = (surfDamageSource + baseDamageSource)*damage(iv)/( thick(iv) + 1.0e-10);
-
-	      if (shear_alpha > 1.0e-10)
-		{
-		  Real shear = std::sqrt(std::pow( 0.5*(vt(iv,0) - vt(iv,3)), 2) + vt(iv,1)*vt(iv,2));
-		  max_shear = max(shear,max_shear);
-		  shear /= ( thick(iv) + 1.0e-10 );
-		  Real shearDamageSource = max(0., shear_alpha * (shear - shear_critical));
-		  source(iv) += shearDamageSource;
-		}
 	    }
 	}
     }
-
-  pout () << "max shear = " << max_shear << std::endl; 
 }
 //compute the half time damage face flux
 void AMRDamage::computeFlux

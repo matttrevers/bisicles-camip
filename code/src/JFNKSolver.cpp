@@ -196,7 +196,7 @@ void LinearizedVTOp::applyOp(Vector<LevelData<FArrayBox>*>& a_lhs,
       setToZero(m_uplushv);
       Real h = finiteh(a_v);
       axby(m_uplushv, m_u->getState(), a_v, 1.0, h);
-      CH_assert(norm(m_uplushv,0) < HUGE_NORM);
+//      CH_assert(norm(m_uplushv,0) < HUGE_NORM);		// MJT
       m_uPerturbed->setState(m_uplushv);
       m_perturbedMlOp.applyOp(a_lhs, m_uplushv , a_homogeneous);
 
@@ -301,7 +301,6 @@ JFNKSolver::Configuration::Configuration()
   m_residualOnly = false;
   m_linearSolverType=Relax; 
   m_maxIter = 15;
-  m_maxIter_init = m_maxIter;
   m_absTol = 1.0e-10;
   m_relTol = 1.0e-10;
   m_BiCGStabRelTol = 1.0e-3;
@@ -359,8 +358,6 @@ void JFNKSolver::Configuration::parse(const char* a_prefix)
   // set parameters based on parmParse
   ParmParse pp(a_prefix);
   pp.query("maxIter",m_maxIter);
-  m_maxIter_init = m_maxIter;
-  pp.query("maxIter_init", m_maxIter_init);
   pp.query("absTol", m_absTol);
   pp.query("relTol",m_relTol);
   pp.query("normType",m_normType);
@@ -545,7 +542,7 @@ int JFNKSolver::solve(Vector<LevelData<FArrayBox>* >& a_u,
 		      Vector<LevelData<FArrayBox>* >& a_addedIce,
 		      Vector<LevelData<FArrayBox>* >& a_removedIce,
 		      Real& a_initialResidualNorm, Real& a_finalResidualNorm,
-		      const Real a_convergenceMetric,  
+		      const Real a_convergenceMetric,
 		      const Vector<LevelData<FArrayBox>* >& a_rhs,
 		      const Vector<LevelData<FArrayBox>* >& a_C,
 		      const Vector<LevelData<FArrayBox>* >& a_C0,
@@ -612,7 +609,7 @@ int JFNKSolver::solve(Vector<LevelData<FArrayBox>* >& a_u,
 		      Vector<LevelData<FArrayBox>* >& a_removedIce,
 		      Real& a_initialResidualNorm, Real& a_finalResidualNorm,
 		      const Real a_convergenceMetric,
-		      const bool a_linear, 
+		      const bool a_linear,
 		      const Vector<LevelData<FArrayBox>* >& a_rhs,
 		      const Vector<LevelData<FArrayBox>* >& a_C,
 		      const Vector<LevelData<FArrayBox>* >& a_C0,
@@ -727,11 +724,11 @@ int JFNKSolver::solve(Vector<LevelData<FArrayBox>* >& a_u,
     {     
       LinearizationMode mode =  (m_config.m_minPicardIter < 0)?JFNK_LINEARIZATION_MODE:PICARD_LINEARIZATION_MODE;
       int iter = 0;
-      int n_iter = (a_time < TINY_NORM)?m_config.m_maxIter_init:m_config.m_maxIter; // a bit of a bodge, but saves changing the interface
-      pout() << "JFNK maxIter = " << n_iter << std::endl;
-      while (!done && iter <  n_iter)
+      
+      while (!done && iter < m_config.m_maxIter)
 	{
 	  oldResNorm = resNorm;
+	  
 	  
 	  //create a linearization (either the Jacobian of f or an approximation to it) around the current a_u
 	  LinearizedVTOp J

@@ -22,9 +22,8 @@
 
 SurfaceFlux* ISMIP6OceanForcing::new_surfaceFlux() 
 {
-  // relies on the default copy constructor
-  ISMIP6OceanForcing* ptr = new ISMIP6OceanForcing(*this);
-  return static_cast<SurfaceFlux*>(ptr);
+    ISMIP6OceanForcing* ptr = new ISMIP6OceanForcing(*this);
+    return static_cast<SurfaceFlux*>(ptr);
 }
 
 
@@ -35,7 +34,7 @@ ISMIP6OceanForcing::ISMIP6OceanForcing(ParmParse& a_pp)
   a_pp.get("file_format",file_format);
 
   m_start_year = 1995;
-  a_pp.get("start_year",m_start_year); // better this be mandatory parm
+  a_pp.query("start_year",m_start_year);
   m_uniform_source_year = m_start_year - 1;
   
   m_end_year = 2100;
@@ -52,19 +51,13 @@ ISMIP6OceanForcing::ISMIP6OceanForcing(ParmParse& a_pp)
 
   m_n_basin = 16; // imbie2 basins
   a_pp.query("n_basin",m_n_basin);
+  
+  m_deltaT_file = "";
+  a_pp.get("deltaT_file",m_deltaT_file);
+  
+  m_deltaT_var_name = "deltaT_basin";
+  a_pp.query("deltaT_var_name",m_deltaT_var_name);
 
-  m_deltaT_specified = true;
-  a_pp.query("deltaT_specified",m_deltaT_specified);
-  
-  if (m_deltaT_specified)
-    {
-      m_deltaT_file = "";
-      a_pp.get("deltaT_file",m_deltaT_file);
-      
-      m_deltaT_var_name = "deltaT_basin";
-      a_pp.query("deltaT_var_name",m_deltaT_var_name);
-    }
-  
   m_anomaly = false;
   a_pp.query("anomaly",m_anomaly);
 
@@ -74,37 +67,20 @@ ISMIP6OceanForcing::ISMIP6OceanForcing(ParmParse& a_pp)
   m_dz = 60.0; // ISMIP6 default (metres)
   a_pp.query("dz",m_dz);
 
-  m_basin_mean_min_thickness = 0.0;
-  a_pp.query("basin_mean_min_thickness", m_basin_mean_min_thickness);
-
   m_local = true;
   a_pp.query("local", m_local);
 
-  m_local_slope = false;
-  a_pp.query("local_slope", m_local_slope);
-  
-  {
-    // default value for factor in the formula
-    // src = factor * |Tf + delta_T|(Tf + delta_T)
-    //ISMIP6 local/non-local defaults for gamma
-    Real gamma0 = (m_local)?11075.4506451341:14477.3367602277;
-    a_pp.query("gamma0", gamma0);
-    // \todo something sensible with constants
-    Real rhoi = 918.0;
-    Real rhoo = 1028.0;
-    Real L = 3.34e+5;
-    Real Cp = 3974.0;
-    m_factor = - gamma0 * std::pow( (rhoo * Cp) / (rhoi * L), 2);
-  }
-
-  // allow user to set factor directly
-  a_pp.query("factor", m_factor);
-
-  if (m_factor > 0.0)
+  if (m_local)
     {
-      pout() << "ISMIP6OceanForcing::ISMIP6OceanForcing.m_factor should be < 0. setting m_factor = "
-	<< m_factor << std::endl; 
+      m_gamma0 = 11075.4506451341 ; // ISMIP6 local default
     }
+  else
+    {
+      m_gamma0 = 14477.3367602277 ; // ISMIP6 non-local default
+      CH_assert( m_basin_file != "");
+    }
+
+  a_pp.query("gamma0", m_gamma0);
   
   /// populate the time -> file map
   for (int year = m_start_year; year <= m_end_year; year++)
@@ -114,12 +90,42 @@ ISMIP6OceanForcing::ISMIP6OceanForcing(ParmParse& a_pp)
       m_year_file.insert(make_pair(year, file));
       delete[] file;
     }
-
-
-  m_tf_is_source = false; // false: normal ISMIP 6 meaning of Tf
-  a_pp.query("tf_is_source", m_tf_is_source);
-  
   m_uniform_source = RefCountedPtr<LevelData<FArrayBox> >(new LevelData<FArrayBox>);
+}
+
+ISMIP6OceanForcing::ISMIP6OceanForcing(const ISMIP6OceanForcing& a)
+{
+  //the assumption here is that we are creating
+  //aliases of the large data,
+  //rather than deep copies. I think that should work out.
+
+  m_anomaly = a.m_anomaly;
+  m_gamma0 = a.m_gamma0;
+  m_dx = a.m_dx;
+
+  //TF data
+  m_year_file = a.m_year_file;
+  m_start_year = a.m_start_year;
+  m_end_year = a.m_end_year;
+  m_name = a.m_name;
+  m_n_layer = a.m_n_layer;
+  m_dz = a.m_dz;
+  
+  // basin mask data
+  m_basin_file = a.m_basin_file;
+  m_basin_var_name = a.m_basin_var_name;
+  m_n_basin = a.m_n_basin;
+  m_basin_mask = a.m_basin_mask;
+
+  // deltaT data
+  m_deltaT_file = a.m_deltaT_file;
+  m_deltaT_var_name = a.m_deltaT_var_name;
+  m_deltaT = a.m_deltaT;
+
+  // source (= -melt) on uniform mesh (level 0)
+  m_uniform_source = a.m_uniform_source;
+  m_uniform_source_year = a.m_uniform_source_year;
+   
 }
 
 void ISMIP6OceanForcing::computeSource
@@ -127,10 +133,15 @@ void ISMIP6OceanForcing::computeSource
  LevelData<FArrayBox>& a_TFb,
  LevelData<FArrayBox>& a_TFb_basin_mean,
  LevelData<FArrayBox>& a_deltaT,
- Real a_factor,
- LevelData<FArrayBox>& a_slope)
+ Real a_gamma0)
 {
-
+  // \todo something sensible with constants
+  Real rhoi = 918.0;
+  Real rhoo = 1028.0;
+  Real L = 3.34e+5;
+  Real Cp = 3974.0;
+  
+  Real factor = - a_gamma0 * std::pow( (rhoo * Cp) / (rhoi * L), 2);
   
   const DisjointBoxLayout& grids = a_source.disjointBoxLayout(); 			      
   for (DataIterator dit(grids); dit.ok(); ++dit)
@@ -139,19 +150,17 @@ void ISMIP6OceanForcing::computeSource
       for (BoxIterator bit(b); bit.ok(); ++bit)
 	{
 	  const IntVect& iv = bit();
-	  a_source[dit](iv) = a_factor * a_slope[dit](iv) 
+	  a_source[dit](iv) = factor
 	    * (a_TFb[dit](iv) + a_deltaT[dit](iv))
-	    * Abs(a_TFb_basin_mean[dit](iv) + a_deltaT[dit](iv));
+	    * (a_TFb_basin_mean[dit](iv) + a_deltaT[dit](iv));
 	}
     }
 }
 
 
-void ISMIP6OceanForcing::computeTFb_and_slope(LevelData<FArrayBox>& a_TFb,
-					      const LevelData<FArrayBox>& a_TF,
-					      LevelData<FArrayBox>& a_slope,
-					      const AmrIceBase& a_amrIce,
-					      bool compute_slope)
+void ISMIP6OceanForcing::computeTFb(LevelData<FArrayBox>& a_TFb,
+				    const LevelData<FArrayBox>& a_TF,
+				    const AmrIceBase& a_amrIce)
 {
 
   CH_TIME("ISMIP6OceanForcing::updateThermalForcing");
@@ -159,7 +168,6 @@ void ISMIP6OceanForcing::computeTFb_and_slope(LevelData<FArrayBox>& a_TFb,
 
   const DisjointBoxLayout& grids = a_TF.disjointBoxLayout();
   a_TFb.define(grids, 1, IntVect::Zero);
-  a_slope.define(grids, 1, IntVect::Zero);
   CH_assert(a_TF.nComp() == m_n_layer);
   
   // which mesh level in AmrIce corresponds to TF/Tfb?
@@ -168,7 +176,7 @@ void ISMIP6OceanForcing::computeTFb_and_slope(LevelData<FArrayBox>& a_TFb,
   // we will be lazy and only support that simple case,
   // if we want to be more general we need to coarsen/refine...
   Real tol = 1.0e-6;
-  CH_assert(Abs(a_amrIce.dx(lev)[0] - m_dx[0]) < tol);
+  CH_assert(Abs(a_amrIce.dx(lev)[0] - m_dx[0] < tol));
   
   // need s,h to compute the ice shelf draft zb
   // although TF and the geometry are on the same uniform mesh, they
@@ -190,23 +198,14 @@ void ISMIP6OceanForcing::computeTFb_and_slope(LevelData<FArrayBox>& a_TFb,
 	  const IntVect& iv = bit();
 	  Real zb = - s[dit](iv) + h[dit](iv); //z downward
 
-	  if (compute_slope)
-	    {
-	      Real dzdx(0.0), dzdy(0.0);
-	      D_TERM(dzdx = s[dit](iv+BASISV(0)) - s[dit](iv-BASISV(0))
-		     - h[dit](iv+BASISV(0)) + h[dit](iv-BASISV(0));,
-		     dzdy = s[dit](iv+BASISV(1)) - s[dit](iv-BASISV(1))
-		     - h[dit](iv+BASISV(1)) + h[dit](iv-BASISV(1));,
-		     dzdz = 0.0);
-	      a_slope[dit](iv) = std::sqrt(dzdx*dzdx + dzdy*dzdy)/m_dx[0];	      
-	    }
-	  else
-	    {
-	      a_slope[dit](iv) = 1.0; // slope is a factor, so 1 is the right choice (not 0.0)
-	    }
-
 	  int km = std::max(0,std::min(m_n_layer-1, int(zb/m_dz - 0.5))); // layer closer to surface
 	  int kp = std::max(0,std::min(m_n_layer-1, int(zb/m_dz + 0.5))); // layer closer to bed
+
+	  //if ((iv[0] == 185) && (iv[1] == 350))
+	  //  {
+	  //    /// near the GL of PIG.
+	  //    pout() << " PIG " << iv << " " << km << " " << kp << " " << zb << std::endl;
+	  //  }
 	  
 	  Real TFb = a_TF[dit](iv,0);
 	  if (kp > 0){
@@ -261,31 +260,17 @@ void ISMIP6OceanForcing::readUniformSource
   readLevelData(vectData,dx,file_name,names,m_n_layer);
   a_dx = RealVect::Unit * dx;
 
-  /// work out TFb(x,y,z) = TF(x,y,z=b), and the slope of the ice shelf base
+  /// work out TFb(x,y,z) = TF(x,y,z=b)
   RefCountedPtr<LevelData<FArrayBox> > TFb(new LevelData<FArrayBox>);
-  RefCountedPtr<LevelData<FArrayBox> > slope(new LevelData<FArrayBox>);
-  computeTFb_and_slope(*TFb, *TF, *slope, a_amrIce, m_local_slope);
+  computeTFb(*TFb, *TF, a_amrIce);
 
-  // set up deltaT if needed / specified
+  // read deltaT if needed
   if ( m_deltaT.isNull() )
     {
       m_deltaT = RefCountedPtr<LevelData<FArrayBox> >(new LevelData<FArrayBox>);
-      if (!m_deltaT_specified)
-	{
-	  //set delta T = 0.0
-	  (*m_deltaT).define(TF->disjointBoxLayout(), 1, IntVect::Zero);
-	  for (DataIterator dit(TF->disjointBoxLayout()); dit.ok(); ++dit)
-	    {
-	      (*m_deltaT)[dit].setVal(0.0);
-	    }
-	}
-      else
-	{
-	  //read delta T
-	  vectData[0] = m_deltaT;
-	  names[0] = m_deltaT_var_name;
-	  readLevelData(vectData,dx,m_deltaT_file,names,1);
-	}
+      vectData[0] = m_deltaT;
+      names[0] = m_deltaT_var_name;
+      readLevelData(vectData,dx,m_deltaT_file,names,1);
     }
   // m_deltaT is not on the same DBL as TFb...
   LevelData<FArrayBox> deltaT(TF->disjointBoxLayout(), 1, IntVect::Zero);
@@ -313,14 +298,7 @@ void ISMIP6OceanForcing::readUniformSource
   
   /// compute the source term
   a_source->define(TF->disjointBoxLayout(), 1, IntVect::Unit);
-  if (m_tf_is_source) // option for alanna
-    {
-      TF->copyTo(Interval(0,0), *a_source, Interval(0,0));
-    }
-  else
-    {
-      computeSource(*a_source, *TFb, *TFb_basin_mean, deltaT,  m_factor, *slope);
-    }
+  computeSource(*a_source, *TFb, *TFb_basin_mean, deltaT,  m_gamma0);
   
 }
 
@@ -372,7 +350,7 @@ void ISMIP6OceanForcing::computeBasinMeans(LevelData<FArrayBox>&a_TFb_basin_mean
 	  for (BoxIterator bit(bx); bit.ok(); ++bit)
 	    {
 	      const IntVect& iv = bit();
-	      if ( (h[dit](iv) > m_basin_mean_min_thickness)
+	      if ( (h[dit](iv) > 0.0)
 		   && (s[dit](iv) > h[dit](iv) + b[dit](iv) ) )
 		{
 		  basin_shelf_mask[dit](iv) = a_basin_mask[dit](iv,i_basin);

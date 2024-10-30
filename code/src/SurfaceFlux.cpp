@@ -14,7 +14,6 @@
 #include "ISMIP6OceanForcing.H"
 #include "GroundingLineLocalizedFlux.H"
 #include "HotspotFlux.H"
-#include "BuelerGIA.H"
 #include <map>
 #ifdef HAVE_PYTHON
 #include "PythonInterface.H"
@@ -28,7 +27,6 @@
 #include "AmrIceBase.H"
 #include "FortranInterfaceIBC.H"
 #include "FillFromReference.H"
-#include "ReadLevelData.H"
 
 #include "NamespaceHeader.H"
 
@@ -184,40 +182,6 @@ SurfaceFlux* SurfaceFlux::parse(const char* a_prefix)
       LevelDataSurfaceFlux* ldptr = new LevelDataSurfaceFlux(tf,name,linearInterp, defaultValue);
       ptr = static_cast<SurfaceFlux*>(ldptr);
     }
-  else if (type == "MultiLevelData")
-    {
-      std::string fileFormat;
-      pp.get("fileFormat",fileFormat);
-      int n;
-      pp.get("n",n);
-      int offset = 0;
-      pp.query("offset",offset);
-
-      Real startTime = 0.0, timeStep = 1.0;
-      pp.query("startTime", startTime);
-      pp.query("timeStep", timeStep);
-      std::string name = "flux";
-      pp.query("name", name);
-      bool linearInterp = true;
-      pp.query("linearInterp", linearInterp);
-
-      Real defaultValue = 0.0;
-      pp.query("defaultValue", defaultValue);
-      
-      RefCountedPtr<std::map<Real,std::string> > tf
-	(new std::map<Real,std::string>);
-      
-      for (int i =0; i < n; i++)
-	{
-	  char* file = new char[fileFormat.length()+32];
-	  sprintf(file, fileFormat.c_str(),i + offset);
-	  tf->insert(make_pair(startTime + Real(i)*timeStep, file));
-	  delete[] file;
-	}
-      
-      MultiLevelDataSurfaceFlux* ldptr = new MultiLevelDataSurfaceFlux(tf,name,linearInterp, defaultValue);
-      ptr = static_cast<SurfaceFlux*>(ldptr);
-    }
   else if (type == "fortran")
     {
       // don't have the context here to actually set values, but
@@ -302,16 +266,11 @@ SurfaceFlux* SurfaceFlux::parse(const char* a_prefix)
 	  openSeaPtr = floatingPtr->new_surfaceFlux();
 	}
 
-
-      bool floating_check_ocean_connected = false;
-      pp.query("floating_check_ocean_connected",floating_check_ocean_connected);
-      
       ptr = static_cast<SurfaceFlux*>
 	(new MaskedFlux(groundedPtr->new_surfaceFlux(),
 			floatingPtr->new_surfaceFlux(),
 			openSeaPtr->new_surfaceFlux(),
-			openLandPtr->new_surfaceFlux(),
-			floating_check_ocean_connected) );
+			openLandPtr->new_surfaceFlux()));
       
       delete groundedPtr;
       delete floatingPtr;
@@ -359,6 +318,21 @@ SurfaceFlux* SurfaceFlux::parse(const char* a_prefix)
      ptr = static_cast<SurfaceFlux*>(axbyFlux.new_surfaceFlux());
 
    }
+/*  else if (type == "gaussianFlux")		// MJT - new gaussianFlux Flux type
+   {
+     Real alpha;
+     pp.get("alpha",alpha);
+     Real beta;
+     pp.get("beta",beta);
+     
+     std::string gaussPrefix(a_prefix);
+     gaussPrefix += ".gauss";
+	 SurfaceFlux* gauss = parse(gaussPrefix.c_str());
+
+     GaussianFlux gaussianFlux(gauss,alpha,beta);
+     ptr = static_cast<SurfaceFlux*>(gaussianFlux.new_surfaceFlux());
+   
+   }*/
   else if (type == "compositeFlux")
    {
      
@@ -396,8 +370,9 @@ SurfaceFlux* SurfaceFlux::parse(const char* a_prefix)
      if (direction == NULL)
        {
 	 pout() << " no flux defined in " << prefix  << std::endl;
-	 MayDay::Error("no flux defined in <normalized flux>.direction");
+	 MayDay::Error("no flux definied in <normalized flux>.direction");
        }
+       
      NormalizedFlux flux(direction, amplitude);
      ptr = static_cast<SurfaceFlux*>(flux.new_surfaceFlux());
    
@@ -418,6 +393,23 @@ SurfaceFlux* SurfaceFlux::parse(const char* a_prefix)
        }
      
      TargetThicknessFlux flux(target, timescale);
+     ptr = static_cast<SurfaceFlux*>(flux.new_surfaceFlux());
+   
+   }
+  else if (type == "constantThicknessFlux")
+   {
+     
+     std::string prefix(a_prefix);
+     prefix += ".constant";
+     SurfaceFlux* constant = parse(prefix.c_str());
+     if (constant == NULL)
+       {
+	 pout() << " no flux defined in " << prefix  << std::endl;
+	 MayDay::Error("no flux defined in <constant flux>.constant");
+	 
+       }
+     
+     ConstantThicknessFlux flux(constant);
      ptr = static_cast<SurfaceFlux*>(flux.new_surfaceFlux());
    
    }
@@ -470,133 +462,6 @@ SurfaceFlux* SurfaceFlux::parse(const char* a_prefix)
     {
       ptr = new ISMIP6OceanForcing(pp);
     }
-# ifdef BUELERGIA
-  else if (type == "buelerGIA") {
-    // Read and set material constants.
-    ParmParse ppCon("constants");
-    // Defaults copied from AmrIce.cpp
-    Real  m_iceDensity = 910.0; 
-    Real  m_seaWaterDensity = 1028.0;
-    Real  m_mantleDensity = 3313.0; 
-    Real  m_gravity = 9.81;
-    ppCon.query("ice_density",m_iceDensity);
-    ppCon.query("gravity",m_gravity);
-    ppCon.query("mantle_density",m_mantleDensity);
-    ppCon.query("seaWater_density",m_seaWaterDensity);
-    BuelerGIAFlux* buelerFlux = new BuelerGIAFlux(m_iceDensity, m_mantleDensity, m_gravity, m_seaWaterDensity);
-
-    // Domain and FFT properties.
-    ParmParse ppAmr("amr");
-    Vector<int> ancells(3);
-    ppAmr.getarr("num_cells",ancells, 0, ancells.size());
-    int Nx, Ny;
-    Nx = ancells[0];
-    Ny = ancells[1];
-
-    // see if the domain is offset from the origin
-    Vector<int> offset(SpaceDim,0);
-    IntVect domainOffset;
-    ppAmr.queryarr("domainLoIndex", offset, 0, SpaceDim);
-    domainOffset[0] = offset[0];
-    domainOffset[1] = offset[1];
-
-    ParmParse ppMain("main");
-    Vector<Real> domsize(3);
-    ppMain.getarr("domain_size", domsize, 0, 3);
-    Real Lx, Ly;
-    Lx = domsize[0];
-    Ly = domsize[1];
-    int pad;
-    pp.get("pad", pad);
-
-    buelerFlux->setDomain(Nx, Ny, Lx, Ly, domainOffset, pad);
-
-    Real t = 0.;
-    ppAmr.query("offsetTime", t);
-    buelerFlux->setUpdatedTime(t);
-
-    int nlayers;
-    pp.get("nlayers", nlayers);
-
-    // Interpret the number of layers and type the properties accordingly.
-    if ( nlayers == 1) {
-      Real visc;
-      pp.get("visc", visc);
-      buelerFlux->setViscosity(visc, 1);
-    }
-    else if ( nlayers == 2 ) {
-      Vector<Real> visc(2);
-      pp.getarr("visc",visc,0,nlayers);
-      Real thk;
-      pp.get("thk",thk);
-      buelerFlux->setViscosity(visc, thk, 2);
-    }
-    // TO BE IMPLEMENTED: GENERAL N LAYERS
-    //else if ( nlayers>2 ) {
-    //  Vector<Real> visc(nlayers); 
-    //  pp.getarr("visc",visc,0,nlayers);
-    //  Vector<Real> thk(nlayers-1);
-    //  pp.getarr("thk",thk,0,nlayers-1);
-    //}
-    else { 
-      MayDay::Error("Bueler flux nlayers not understood.");
-    }
-    
-    Real flex;
-    pp.get("flex", flex);
-    buelerFlux->setFlexural(flex);
-
-    bool includeElas = false;
-    Real lame1=34.2666e9, lame2=26.6e9;
-    pp.query("includeElas", includeElas);
-    pp.query("lame1", lame1);
-    pp.query("lame2", lame2);
-    buelerFlux->setElastic(includeElas, lame1, lame2);
-
-    bool oceanLoad = false;
-    pp.query("oceanLoad", oceanLoad);
-    buelerFlux->setOceanLoad(oceanLoad);
-
-    bool ELRA = false;
-    Real ELRAtau = 1e3; // in yr
-    pp.query("ELRA", ELRA);
-    pp.query("ELRAtau", ELRAtau);
-    buelerFlux->setELRA(ELRA, ELRAtau);
-
-    Real dt=0;
-    pp.query("dt", dt);
-    buelerFlux->setTimestep(dt);
-
-
-    buelerFlux->precomputeGIAstep();
-
-    // Check for initial disequilibrium uplift.
-    // Assumes isostatic equilibrium is basal topography without ice
-    // thickness. TO GENERALIZE AT A LATER DATE.
-    bool init = false;
-    pp.query("init", init);
-    buelerFlux->setInitIceRef0( init );
-    if (init) { 
-      std::string initPrefix(a_prefix);
-      initPrefix += ".init";
-	  ParmParse pi(initPrefix.c_str());
-      std::string file, name;
-      pi.get("file", file);
-      pi.get("name", name);
-      // Read uplift
-      RefCountedPtr<LevelData<FArrayBox>> upl0(new LevelData<FArrayBox>());
-	  Vector<RefCountedPtr<LevelData<FArrayBox> > > data(1,upl0);
-      Real dx;
-      Vector<std::string> namevec(1,name);
-	  readLevelData(data,dx,file,namevec,1);
-      // Set uplift
-      buelerFlux->setInitialVelocity(*upl0);
-    }
-
-    ptr = static_cast<SurfaceFlux*>(buelerFlux->new_surfaceFlux());
-
-  }
-#endif // BUELERGIA
 #ifdef HAVE_PYTHON
   else if (type == "pythonFlux") {
     

@@ -57,78 +57,6 @@ ConstitutiveRelation::computeStrainRateInvariantFace(LevelData<FluxBox>& a_epsil
 
 
 
-// extrapolate the velocity beyond the front: needed to avoid large artificial strains.
-// From Sam K & Dan M
-void ConstitutiveRelation::extendVelocity(LevelData<FArrayBox>& a_modifiedVel,
-					  const LevelData<FArrayBox>& a_originalVel,
-					  const LevelData<FArrayBox>& a_iceThickness) const
-{
-  
-  DataIterator dit = a_modifiedVel.dataIterator();
-  Real vel_eps = 1.0e-8;
-  Real thickness_eps = 0.1;
-
-  // turns out this might need a cornerCopier
-  // put this into its own context because we're playing fast
-  // and loose with const-ness 
-  {
-    const DisjointBoxLayout& grids = a_originalVel.getBoxes();
-    const ProblemDomain& domain = grids.physDomain();
-    LevelData<FArrayBox>& nonConstVel = *(const_cast<LevelData<FArrayBox>* >(&a_originalVel));
-    CornerCopier cc(grids, grids, domain,
-                    nonConstVel.ghostVect(), true);
-    
-    nonConstVel.exchange(cc);
-  } // end cornerCopier scope
-
-  for (dit.begin(); dit.ok(); ++dit)
-    {
-      FArrayBox& thisVel = a_modifiedVel[dit];
-      const FArrayBox& thisH = a_iceThickness[dit];
-      thisVel.copy(a_originalVel[dit]);
-      
-      // loop over directions first because we want to be able to do ghost cells where possible
-      for (int dir=0; dir<SpaceDim; dir++)
-        {          
-          Box velBox = a_modifiedVel[dit].box();
-          velBox.grow(dir,-1);
-          BoxIterator bit(velBox);
-          SideIterator sit;                  
-          for (bit.begin(); bit.ok(); ++bit)
-            {
-              IntVect iv = bit();
-              // only do this for openSea cells
-              if (abs(a_originalVel[dit](iv,0)) < vel_eps)
-                {
-                  for (sit.begin(); sit.ok(); ++sit)
-                    {
-                      IntVect shiftVect = sign(sit())*BASISV(dir);
-                      // are we at a calving front?
-                      if (abs(thisH(iv+shiftVect,0)) > thickness_eps)                      
-
-                        {
-                          // linearly extrapolate if possible
-                          if ((thisVel.box().contains((iv+2*shiftVect))) && abs(thisH(iv+2*shiftVect,0)) > thickness_eps)
-                            {
-                              thisVel(iv,0) = 2.0*thisVel(iv+shiftVect,0) - thisVel(iv+2*shiftVect,0);
-                              thisVel(iv,1) = 2.0*thisVel(iv+shiftVect,1) - thisVel(iv+2*shiftVect,1);
-                            }
-                          else
-                            {
-                              // just copy if stencil doesn't exist
-                              thisVel(iv,0) = thisVel(iv+shiftVect,0);
-                              thisVel(iv,1) = thisVel(iv+shiftVect,1);
-                            }
-                        } // end if neigboring cell is floating
-                    } // end loop over hi-lo
-                } // end if this is an opensea cell
-            } // end loop over cells in this box
-        } // end loop over directions
-    } // end loop over boxes
-}
-
-
-
 void
 ConstitutiveRelation::computeStrainRateInvariant(LevelData<FArrayBox>& a_epsilonSquared,
 						 LevelData<FArrayBox>& a_gradVelocity,
@@ -156,6 +84,7 @@ ConstitutiveRelation::computeStrainRateInvariant(LevelData<FArrayBox>& a_epsilon
   
   for (dit.begin(); dit.ok(); ++dit)
     {
+	
       Box derivBox = grids[dit];
       derivBox.grow(a_ghostVect);
 
@@ -207,17 +136,21 @@ ConstitutiveRelation::computeStrainRateInvariantFace(LevelData<FluxBox>& a_epsil
   Interval DerivDir(0,SpaceDim-1);
   Interval DerivComps(0,SpaceDim-1);
 
-  CH_assert(a_gradVelocity.nComp() == SpaceDim*SpaceDim);  
-  const DisjointBoxLayout& grids = a_epsilonSquared.getBoxes();
-  
-  //LevelData<FArrayBox> extVel(grids, SpaceDim, a_velocity.ghostVect());
-  //extendVelocity(extVel ,a_velocity,a_coordSys.getH());
-  
+  CH_assert(a_gradVelocity.nComp() == SpaceDim*SpaceDim);
+
 #define TENSORCF
 #ifdef TENSORCF
   //calculate the ghost cell values of velocity and its tangential
   //gradients.
+  const DisjointBoxLayout& grids = a_epsilonSquared.getBoxes();
+  //at the moment, we are doing an extra malloc and copy for vel : eliminate this
+  // LevelData<FArrayBox> vel(grids,SpaceDim,2*IntVect::Unit);
+  // for (DataIterator dit(grids);dit.ok();++dit)
+  //   {
+  //     vel[dit].copy(a_velocity[dit],0,0,SpaceDim);
+  //   }
 
+  //LevelData<FArrayBox>* velPtr = const_cast<LevelData<FArrayBox>*>(&a_velocity);
   LevelData<FArrayBox>& vel = a_velocity;
   LevelData<FArrayBox> gradvel(grids,SpaceDim*SpaceDim,IntVect::Unit);
   Real dx = a_coordSys.dx()[0];
@@ -270,23 +203,17 @@ ConstitutiveRelation::computeStrainRateInvariantFace(LevelData<FluxBox>& a_epsil
 
 	  ViscousTensorOp::getFaceDivAndGrad(faceDiv,faceGrad,v,gv,grids.physDomain(),
 					     faceBox,faceDir,dx);
-	  
-	}
-    }
 
-  
+	}
+	 
+    }
 #else
   computeFCDerivatives(a_gradVelocity, a_velocity, a_coordSys,
                        DerivComps, DerivDir, a_ghostVect);
-#endif
 
-  // // replace with one-sided derivatives close to ice front
-  //computeFCDerivatives(a_gradVelocity, a_velocity, a_coordSys,
-  //                      DerivComps, DerivDir, a_ghostVect, true);
-  
-  
   // now compute strainInvariant
-  
+  const DisjointBoxLayout& grids = a_epsilonSquared.getBoxes();
+#endif
   DataIterator dit = grids.dataIterator();
 
   for (dit.begin(); dit.ok(); ++dit)
@@ -323,8 +250,7 @@ ConstitutiveRelation::computeStrainRateInvariantFace(LevelData<FluxBox>& a_epsil
                                     CHF_INT(dvdyComp),
                                     CHF_BOX(faceBox));
                 
-		int dbg(0); dbg++;
-		
+
               }
             else
               {

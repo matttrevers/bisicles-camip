@@ -120,17 +120,6 @@ namespace IceUtility
    const RateFactor* a_rateFactor,
    const LevelData<FArrayBox>& a_internalEnergy);
 
-
-  /// limit cell-centered velocity in cells where frac < tol by linear extrapolation
-  void limitMarginVelocity(Vector<LevelData<FArrayBox>*>&a_velocity,
-			   const Vector<LevelData<FArrayBox>*>&a_frac,
-			   int a_finest_level, Real a_minFrac);
-  
-  /// limit cell-centered velocity in cells adjacent to margin by linear extrapolation
-  void limitMarginVelocity(Vector<LevelData<FArrayBox>*>&a_velocity,
-			   const Vector<LevelData<FArrayBox>*>&a_frac,
-			   int a_finest_level);
-			   
   /// extrapolate face centered velocity field (usually derived by cell-to-face average) to the margins
   void extrapVelocityToMargin(LevelData<FluxBox>& a_faceVel, 
 					  const LevelData<FArrayBox>& a_cellVel, 
@@ -209,7 +198,14 @@ namespace IceUtility
   /// set C = 0 in floating region, potentially using subgrid interpolation 
   void setFloatingBasalFriction
   (LevelData<FArrayBox>& a_C, const LevelSigmaCS& a_coords,
-   const DisjointBoxLayout& a_grids);
+   //const DisjointBoxLayout& a_grids); 											// MJT added the factor
+   const DisjointBoxLayout& a_grids, Real m_reset_floating_friction_factor); 	// MJT added the factor
+   
+  /// MJT - reduce basal friction linearly to zero for grounded ice where the thickness above flotation is below a certain fraction of the total thickness
+  void smoothGroundedFrictionToZero
+  (LevelData<FArrayBox>& a_C, const LevelSigmaCS& a_coords,
+   //const DisjointBoxLayout& a_grids);
+   const DisjointBoxLayout& a_grids, Real m_reduce_grounded_friction_limit);
 
 }
 

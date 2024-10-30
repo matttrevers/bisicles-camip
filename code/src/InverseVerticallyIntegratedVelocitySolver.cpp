@@ -29,7 +29,6 @@
 #include "AmrIceBase.H"
 #include "NamespaceHeader.H"
 
-
 #define CCOMP 0
 #define MUCOMP 1
 #define NXCOMP MUCOMP + 1
@@ -70,7 +69,7 @@ InverseVerticallyIntegratedVelocitySolver::Configuration::~Configuration()
 
 
 InverseVerticallyIntegratedVelocitySolver::InverseVerticallyIntegratedVelocitySolver()
-  : m_config(), m_time(0.0), m_prev_time(-123.0)
+  : m_config(), m_time(0.0), m_prev_time(-1.0)
 {
   
 }
@@ -110,12 +109,12 @@ InverseVerticallyIntegratedVelocitySolver::Configuration::parse(const char* a_pr
 
   m_minTimeBetweenOptimizations = -1.0;
   pp.query("minTimeBetweenOptimizations", m_minTimeBetweenOptimizations  );
-
-  m_dtTypical = 1.0/12.0;
-  pp.query("dtTypical",m_dtTypical);
   
   m_CGmaxIter = 16;
   pp.query("CGmaxIter",m_CGmaxIter);
+    
+  m_CGminIter = 3;							//MJT
+  pp.query("CGminIter",m_CGminIter);		//MJT
   
   m_CGtol = 1.0e-3;
   pp.query("CGtol",m_CGtol);
@@ -135,6 +134,9 @@ InverseVerticallyIntegratedVelocitySolver::Configuration::parse(const char* a_pr
   m_CGhang = 0.999;
   pp.query("CGhang",m_CGhang);
   
+  m_CGhangLimit = 10.0;
+  pp.query("CGhangLimit",m_CGhangLimit);
+  
   m_CGrestartInterval = 9999;
   pp.query("restartInterval",m_CGrestartInterval);
 
@@ -143,6 +145,7 @@ InverseVerticallyIntegratedVelocitySolver::Configuration::parse(const char* a_pr
  
   m_thicknessThreshold = 100.0;
   pp.query("thicknessThreshold",m_thicknessThreshold);
+  
  
   {
     std::string s = "speed";
@@ -202,11 +205,8 @@ InverseVerticallyIntegratedVelocitySolver::Configuration::parse(const char* a_pr
   m_optimizeX1 = true;
   pp.query("optimizeX1", m_optimizeX1 );
   CH_assert(m_optimizeX0 || m_optimizeX1); // at least one of these should be true
-
-  // evaluate *unregluarized* gradient of J with respect to mucoef (or rather, X1) in the shelf only?
-  m_gradMuCoefShelfOnly = false;
-  pp.query("gradMuCoefShelfOnly", m_gradMuCoefShelfOnly); 
-
+  
+  
   m_gradCsqRegularization = 0.0;
   pp.query("gradCsqRegularization",m_gradCsqRegularization);
 
@@ -288,10 +288,27 @@ InverseVerticallyIntegratedVelocitySolver::Configuration::parse(const char* a_pr
   //m_outerCounter = -1;
   //pp.query("restart",m_outerCounter);
 
+  // MJT - optimize phi prioritizing the shear margins
+  m_optimizePhiForShearMargins = false;
+  pp.query("optimizePhiForShearMargins",m_optimizePhiForShearMargins);
+  
+  // MJT - optimize phi prioritizing high strain rates
+  m_optimizePhiForHighStrain = false;
+  pp.query("optimizePhiForHighStrain",m_optimizePhiForHighStrain);
 
+  // MJT - optimize phi prioritizing the shear margins
+  m_optimizeCForLowShear = false;
+  pp.query("optimizeCForLowShear",m_optimizeCForLowShear);
+
+  // MJT - optimize phi prioritizing high strain rates
+  m_optimizeCForLowStrain = false;
+  pp.query("optimizeCForLowStrain",m_optimizeCForLowStrain);
+
+  // MJT - use modelled (true) or observed (false, default) shear metric for optimising phi
+  m_useModelledShearMetric = false;
+  pp.query("useModelledShearMetric",m_useModelledShearMetric);
 
 }
-
 
 void 
 InverseVerticallyIntegratedVelocitySolver::define
@@ -363,6 +380,14 @@ InverseVerticallyIntegratedVelocitySolver::define
   
   //create(m_rhs,SpaceDim,IntVect::Unit);
   create(m_adjRhs,SpaceDim,IntVect::Unit);
+  
+  //MJT- 2021-05-18
+  create(m_S,1,IntVect::Unit);
+  create(m_Sminus,1,IntVect::Unit);
+  
+  //MJT- 2021-08-19
+  create(m_E,1,IntVect::Unit);
+  create(m_Eminus,1,IntVect::Unit);
 
 }
 
@@ -420,7 +445,6 @@ int InverseVerticallyIntegratedVelocitySolver::solve
       // seem to work better if muCoef is not started
       // from the coarse mesh version (though maybe we
       // just need to interpolate differently?)
-      pout() <<  " Optimization: muCoef <- 1 ";
       setToZero(m_muCoefOrigin);
       plus(m_muCoefOrigin,1.0);
     }
@@ -428,7 +452,6 @@ int InverseVerticallyIntegratedVelocitySolver::solve
     {
       // assign input muCoef to muCoef_0 and limit
       assign(m_muCoefOrigin, a_muCoef);
-     
       for (int  lev = 0; lev < m_muCoefOrigin.size(); lev++)
 	{
 	  for (DataIterator dit(m_grids[lev]); dit.ok(); ++dit)
@@ -507,34 +530,46 @@ int InverseVerticallyIntegratedVelocitySolver::solve
       mapX(X);
       assign(m_velb,m_velObs);
       assign(m_bestVel,m_velb);
-      //      assign(m_bestC,m_Cmasked);
-      assign(m_bestC,m_C);      
+      assign(m_bestC,m_Cmasked);
       assign(m_bestMuCoef, m_muCoef);
       m_optimization_done = false;
     }
   else
     {
-      
-      m_outerCounter = 0;
-      m_innerCounter = 0; 
-
-      int CGmaxIter = m_config.m_CGmaxIter;
-      if ( (m_time - m_prev_time) < m_config.m_minTimeBetweenOptimizations)
+       m_prev_time = m_time;
+      // attempt the optmization
+      if (false && m_outerCounter > 0) // \todo : decide how to do restarts....
+	{
+	  std::string restartfile = outerStateFile();
+	  pout() << "restarting from " << restartfile << std::endl;
+	  //readState(restartfile, m_innerCounter, X);
+	  m_outerCounter++;
+	  m_velocityInitialised = true;
+	  restart();
+	}
+      else
+	{
+	  m_outerCounter = 0;
+	  m_innerCounter = 0;
+	} 
+	
+	
+    int CGmaxIter = m_config.m_CGmaxIter;
+    int CGminIter = m_config.m_CGminIter;
+    if ( (m_time - m_prev_time) < m_config.m_minTimeBetweenOptimizations)
 	{
 	  // just initialize the optimization, which means computing the first objective etc.
 	  CGmaxIter = 0;
+	  CGminIter = -1;
 	}
   
-      pout() << " Optimization: CGmaxIter = " << CGmaxIter << "  m_time = " << m_time << "  m_prev_time = " << m_prev_time  << std::endl;
-      
-      // attempt the optimization
-      CGOptimize(*this ,  X , CGmaxIter , m_config.m_CGtol , m_config.m_CGhang,
+      pout() << " Optimization: CGmaxIter = " << CGmaxIter << "  CGminIter = " << CGminIter << "  m_time = " << m_time << "  m_prev_time = " << m_prev_time  << std::endl;
+//      CGOptimize(*this ,  X , m_config.m_CGmaxIter , m_config.m_CGtol , m_config.m_CGhang,						//MJT
+      //CGOptimize(*this ,  X , m_config.m_CGmaxIter , m_config.m_CGminIter , m_config.m_CGtol , m_config.m_CGhang , m_config.m_CGhangLimit,	//MJT
+      CGOptimize(*this ,  X , CGmaxIter , CGminIter , m_config.m_CGtol , m_config.m_CGhang , m_config.m_CGhangLimit,	//MJT
 		 m_config.m_CGsecantParameter, m_config.m_CGsecantStepMaxGrow, 
 		 m_config.m_CGsecantMaxIter , m_config.m_CGsecantTol, m_outerCounter);
       m_optimization_done = true;
-
-      if (CGmaxIter > 0)
-	m_prev_time = m_time;
 
     }
 
@@ -830,7 +865,8 @@ InverseVerticallyIntegratedVelocitySolver::mapX(const Vector<LevelData<FArrayBox
 
   for (int lev=0; lev <= m_finest_level;lev++)
     {	
-      IceUtility::setFloatingBasalFriction(*m_Cmasked[lev], *m_coordSys[lev], m_grids[lev]);
+      //IceUtility::setFloatingBasalFriction(*m_Cmasked[lev], *m_coordSys[lev], m_grids[lev]);
+      IceUtility::setFloatingBasalFriction(*m_Cmasked[lev], *m_coordSys[lev], m_grids[lev], 0.0);	// MJT - changed the definition
     }
 
   // add drag due to ice in contact with ice-free rocky walls
@@ -953,8 +989,7 @@ InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient
     {
       //save the velocity, muCoef, and C;
       assign(m_bestVel,m_velb);
-      //      assign(m_bestC,m_Cmasked);
-      assign(m_bestC,m_C);      
+      assign(m_bestC,m_Cmasked);
       assign(m_bestMuCoef, m_muCoef);
     }
 
@@ -978,6 +1013,9 @@ InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient
   
   //add Tikhonov regularization
   regularizeGradient(a_g, a_x);
+  
+  // MJT - calculate the shear metric.
+  computeShearStrainMetric(a_g);
   
   if (m_config.m_boundMethod == Configuration::projection)
     applyProjection(a_g, a_x);
@@ -1306,6 +1344,154 @@ InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs()
       }
   }
 }
+
+
+/// MJT - 2021-05-18
+/// Compute S, a metric which quantifies the shear strain (i.e. identifies the shear margins)
+/// We want to calculate:
+/// S = |(du/dy.u + dv/dx.v)|/(|u|+1e-6)
+/// This will then be used in the optimisation procedure for phi to prioritise the shear margins
+/// Multiply by a mask to ignore the ice-ocean boundary cells
+/// Normalise S
+/// FInally we multiply gradJMuCoef by S
+void 
+InverseVerticallyIntegratedVelocitySolver::computeShearStrainMetric(Vector<LevelData<FArrayBox>* >& a_g)
+{
+  for (int lev=0; lev <= m_finest_level ;lev++)
+    {
+      for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
+	{
+	  FArrayBox& S = (*m_S[lev])[dit];
+	  FArrayBox& Sminus = (*m_Sminus[lev])[dit];
+	  FArrayBox& E = (*m_E[lev])[dit];
+	  FArrayBox& Eminus = (*m_Eminus[lev])[dit];
+	  const FArrayBox& h = m_coordSys[lev]->getH()[dit];
+	  const FArrayBox& um = (*m_velb[lev])[dit];
+      const FArrayBox& uo = (*m_velObs[lev])[dit];
+	  const Box& box = m_grids[lev][dit];
+      FArrayBox mask(h.box(),SpaceDim);
+	  FArrayBox& g = (*a_g[lev])[dit];
+	  
+	  S.setVal(1.0);
+	  Sminus.setVal(1.0);
+	  E.setVal(1.0);
+	  Eminus.setVal(1.0);
+	  
+	  // Mask to exclude ocean-ice interface cells where strain rate will be calculated as really big
+	  mask.setVal(1.0);
+	  for (BoxIterator bit(box);bit.ok();++bit)
+		{
+		  const IntVect& iv = bit();
+          for (int ivi = -2; ivi <= 2; ivi++)
+			{
+			  for (int ivj = -2; ivj <= 2; ivj++)
+				{
+				  IntVect ivp = iv + ivi * BASISV(0) + ivj * BASISV(1);
+				  if ( (h(ivp) <= TINY_THICKNESS) )
+				    {
+				      mask(iv,0) = 0.0;
+				    }
+				}
+			}
+		}
+	  
+	  // Do the computation of the metric in fortran
+	  if (m_config.m_useModelledShearMetric) {
+      FORT_COMPUTESHEARMETRIC(CHF_FRA1(S,0),
+                              CHF_CONST_FRA1(um,0),
+							  CHF_CONST_FRA1(um,1),
+                              CHF_CONST_FRA1(mask,0),
+                              CHF_CONST_REAL(m_dx[lev][0]),
+                              CHF_BOX(box));
+							  
+      FORT_COMPUTESTRAINMETRIC(CHF_FRA1(E,0),
+                              CHF_CONST_FRA1(um,0),
+							  CHF_CONST_FRA1(um,1),
+                              CHF_CONST_FRA1(mask,0),
+                              CHF_CONST_REAL(m_dx[lev][0]),
+                              CHF_BOX(box));
+      }
+	  else {
+      FORT_COMPUTESHEARMETRIC(CHF_FRA1(S,0),
+                              CHF_CONST_FRA1(uo,0),
+							  CHF_CONST_FRA1(uo,1),
+                              CHF_CONST_FRA1(mask,0),
+                              CHF_CONST_REAL(m_dx[lev][0]),
+                              CHF_BOX(box));
+							  
+      FORT_COMPUTESTRAINMETRIC(CHF_FRA1(E,0),
+                              CHF_CONST_FRA1(uo,0),
+							  CHF_CONST_FRA1(uo,1),
+                              CHF_CONST_FRA1(mask,0),
+                              CHF_CONST_REAL(m_dx[lev][0]),
+                              CHF_BOX(box));
+      }
+							  
+	}
+    }
+	
+  // Normalise and multiply
+  Real maxS = computeMax(m_S,m_refRatio);
+  Real maxE = computeMax(m_E,m_refRatio);
+  for (int lev=0; lev <= m_finest_level ;lev++)
+    {
+      for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
+    {
+	  FArrayBox& S = (*m_S[lev])[dit];
+	  FArrayBox& Sminus = (*m_Sminus[lev])[dit];
+	  FArrayBox& E = (*m_E[lev])[dit];
+	  FArrayBox& Eminus = (*m_Eminus[lev])[dit];
+	  const Box& box = m_grids[lev][dit];
+	  
+	  for (BoxIterator bit(box);bit.ok();++bit)
+		{
+		  const IntVect& iv = bit();
+		  S(iv) /= maxS;
+		  Sminus(iv) = 1.0 - S(iv);
+		  E(iv) /= maxE;
+		  Eminus(iv) = 1.0 - E(iv);
+		}
+	}
+    }
+
+  // Do the multiplication of gradJMuCoef if optimizePhiForShearMargins
+  if (m_config.m_optimizePhiForShearMargins)
+  {
+    for (int lev=0; lev <= m_finest_level ;lev++)
+      {
+        for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
+      { 
+        FArrayBox& S = (*m_S[lev])[dit];
+        FArrayBox& Sminus = (*m_Sminus[lev])[dit];
+        FArrayBox& g = (*a_g[lev])[dit];
+      
+        g.mult(S, 0, MUCOMP, 1);
+		if (m_config.m_optimizeCForLowShear)
+		  {
+			g.mult(Sminus, 0, CCOMP, 1);
+		}
+      }
+    }
+  }
+  else if (m_config.m_optimizePhiForHighStrain)
+  {
+    for (int lev=0; lev <= m_finest_level ;lev++)
+      {
+        for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
+      { 
+        FArrayBox& E = (*m_E[lev])[dit];
+        FArrayBox& Eminus = (*m_Eminus[lev])[dit];
+        FArrayBox& g = (*a_g[lev])[dit];
+      
+        g.mult(E, 0, MUCOMP, 1);
+		if (m_config.m_optimizeCForLowStrain)
+		  {
+			g.mult(Eminus, 0, CCOMP, 1);
+		}
+      }
+    }
+  }
+}
  
 
 /// unregularized gradient
@@ -1404,21 +1590,6 @@ void InverseVerticallyIntegratedVelocitySolver::computeGradient
 	      RealVect oneOnTwoDx = 1.0/ (2.0 * m_dx[lev]);
 	      t.mult(-oneOnTwoDx[0]);
 	      t.mult(muCoef);
-
-	      // restrict X1 gradient to shelf only?
-	      if (m_config.m_gradMuCoefShelfOnly)
-		{
-		  const BaseFab<int>& mask = m_coordSys[lev]->getFloatingMask()[dit];
-		  for (BoxIterator bit(box);bit.ok();++bit)
-		    {
-		      const IntVect& iv = bit();
-		      if (mask(iv) != FLOATINGMASKVAL)
-			{
-			  t(iv) = 0.0;
-			}
-		    }
-		}
-	      
 	      G.plus(t,0,MUCOMP);
 	    }
 	}
@@ -1532,30 +1703,33 @@ void InverseVerticallyIntegratedVelocitySolver::applyProjection
     pout() << "writing state to " << a_file << std::endl;
     Vector<std::string> names;
     names.resize(0);
-    names.push_back("X0");
-    names.push_back("X1");
+    // MJT - Removed lots of fields from the ControlOuter files
+    //names.push_back("X0");
+    //names.push_back("X1");
     names.push_back("C");
     names.push_back("Cwshelf");
     names.push_back("muCoef");
     names.push_back("xVelb");
     names.push_back("yVelb");
-    names.push_back("xVels");
-    names.push_back("yVels");
+    //names.push_back("xVels");
+    //names.push_back("yVels");
     names.push_back("xVelo");
     names.push_back("yVelo");
     names.push_back("divuh");
-    names.push_back("divuho");
-    names.push_back("xAdjVel");
-    names.push_back("yAdjVel");
-    names.push_back("xAdjRhs");
-    names.push_back("yAdjRhs");
+    //names.push_back("divuho");
+    //names.push_back("xAdjVel");
+    //names.push_back("yAdjVel");
+    //names.push_back("xAdjRhs");
+    //names.push_back("yAdjRhs");
     names.push_back("gradJC");
     names.push_back("gradJMuCoef");
     names.push_back("velc");
-    names.push_back("divuhc");
+    //names.push_back("divuhc");
     names.push_back("thickness");
     names.push_back("Z_base");
     names.push_back("Z_surface");
+    names.push_back("normalizedShearMetric");
+    names.push_back("normalizedStrainRateMetric");
 
     Vector<LevelData<FArrayBox>*> vdata(m_finest_level+1);
     for (int lev = 0; lev <= m_finest_level;lev++)
@@ -1563,27 +1737,29 @@ void InverseVerticallyIntegratedVelocitySolver::applyProjection
     vdata[lev] = new LevelData<FArrayBox>(m_grids[lev],names.size(),IntVect::Zero);
     LevelData<FArrayBox>& data = *vdata[lev];
     int j = 0;
-    a_x[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    a_x[lev]->copyTo(Interval(1,1),data,Interval(j,j));j++;
+    //a_x[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+    //a_x[lev]->copyTo(Interval(1,1),data,Interval(j,j));j++;
     m_C[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++; 
     m_Cmasked[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++; 
     m_muCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++; 
     m_velb[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
-    m_vels[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+    //m_vels[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
     m_velObs[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
     m_divuh[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    m_divuhObs[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    m_adjVel[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
-    m_adjRhs[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+    //m_divuhObs[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+    //m_adjVel[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+    //m_adjRhs[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
     a_g[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
     a_g[lev]->copyTo(Interval(1,1),data,Interval(j,j));j++;
     m_velCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
     //  m_thkCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    m_divuhCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+    //m_divuhCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
     m_coordSys[lev]->getH().copyTo(Interval(0,0),data,Interval(j,j));j++;
     m_coordSys[lev]->getTopography().copyTo(Interval(0,0),data,Interval(j,j));j++;
     m_coordSys[lev]->getSurfaceHeight().copyTo(Interval(0,0),data,Interval(j,j));j++;
     //m_pointThicknessData[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+    m_S[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+    m_E[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
     
   }
     const Real dt = 1.0;
@@ -1619,7 +1795,7 @@ void InverseVerticallyIntegratedVelocitySolver::applyProjection
     ss.width(2);ss.fill('0');ss << m_finest_level;
     ss.width(0); ss << "lev.";
 
-    ss.width(6);ss.fill('0');ss << int(m_time/m_config.m_dtTypical);
+    ss.width(6);ss.fill('0');ss << int(m_time*12.0);
     //ss.width(0); ss << "t.";
     
     ss.width(6);ss.fill('0');ss << m_outerCounter;

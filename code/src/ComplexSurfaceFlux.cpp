@@ -9,6 +9,7 @@
 #endif
 
 #include "SurfaceFlux.H"
+#include "IceThermodynamics.H"
 #include "ComplexSurfaceFlux.H"
 #include "LevelDataSurfaceFlux.H"
 #include "GroundingLineLocalizedFlux.H"
@@ -26,9 +27,8 @@
 #include "AmrIceBase.H"
 #include "FortranInterfaceIBC.H"
 #include "FillFromReference.H"
-
+#include "AmrIce.H"
 #include "NamespaceHeader.H"
-
 
 // constructor
 ProductSurfaceFlux::ProductSurfaceFlux  (SurfaceFlux* a_flux1, SurfaceFlux* a_flux2)
@@ -78,14 +78,11 @@ ProductSurfaceFlux::surfaceThicknessFlux(LevelData<FArrayBox>& a_flux,
 
 
 
-
 /// constructor
 MaskedFlux::MaskedFlux(SurfaceFlux* a_groundedIceFlux, SurfaceFlux* a_floatingIceFlux,
-		       SurfaceFlux* a_openSeaFlux, SurfaceFlux* a_openLandFlux,
-		       bool m_floating_check_ocean_connected)
+		       SurfaceFlux* a_openSeaFlux, SurfaceFlux* a_openLandFlux)
   :m_groundedIceFlux(a_groundedIceFlux),m_floatingIceFlux(a_floatingIceFlux),
-   m_openSeaFlux(a_openSeaFlux),m_openLandFlux(a_openLandFlux),
-   m_floating_check_ocean_connected(m_floating_check_ocean_connected)
+   m_openSeaFlux(a_openSeaFlux),m_openLandFlux(a_openLandFlux)
 {
   CH_assert(a_groundedIceFlux);
   CH_assert(a_floatingIceFlux);
@@ -101,7 +98,7 @@ SurfaceFlux* MaskedFlux::new_surfaceFlux()
   SurfaceFlux* g = m_groundedIceFlux->new_surfaceFlux();
   SurfaceFlux* s = m_openSeaFlux->new_surfaceFlux();
   SurfaceFlux* l = m_openLandFlux->new_surfaceFlux();
-  return static_cast<SurfaceFlux*>(new MaskedFlux(g,f,s,l,m_floating_check_ocean_connected));
+  return static_cast<SurfaceFlux*>(new MaskedFlux(g,f,s,l));
 }
 
 void MaskedFlux::surfaceThicknessFlux(LevelData<FArrayBox>& a_flux,
@@ -139,17 +136,6 @@ void MaskedFlux::surfaceThicknessFlux(LevelData<FArrayBox>& a_flux,
 			     CHF_CONST_FIA1(mask,0),
 			     CHF_CONST_INT(m),
 			     CHF_BOX(box));
-
-	  //check ocean connection if required
-	  if ( m_floating_check_ocean_connected )
-	    {
-	      if (m == FLOATINGMASKVAL || m == OPENSEAMASKVAL)
-		{
-		  const FArrayBox& oceanConn =   a_amrIce.geometry(a_level)->getOceanConnected()[dit];
-		  a_flux[dit] *= oceanConn; // assuming 0 < oceanConn < 1, which it was originally.
-		} // end if (m == FLOATINGMASKVAL || m == OPENSEAMASKVAL)
-	    } // end if ( m_floating_check_ocean_connected )
-	  
 	}
     }
 
@@ -204,6 +190,72 @@ void AxbyFlux::surfaceThicknessFlux(LevelData<FArrayBox>& a_flux,
 
 }
 
+/*
+/// MJT - New Gaussian flux
+SurfaceFlux* GaussianFlux::new_surfaceFlux()
+{
+  return static_cast<SurfaceFlux*>(new GaussianFlux(m_gauss,m_alpha,m_beta) );
+}
+GaussianFlux::GaussianFlux (SurfaceFlux* a_gauss, const Real& a_alpha, const Real& a_beta)
+{
+  m_alpha = a_alpha;
+  m_beta = a_beta;
+  
+  CH_assert(a_gauss != NULL);
+  m_gauss = a_gauss->new_surfaceFlux();
+  CH_assert(m_gauss != NULL);
+
+}
+
+GaussianFlux::~GaussianFlux()
+{
+  if (m_gauss != NULL)
+    {
+      delete m_gauss; m_gauss = NULL;
+    }
+}
+
+void GaussianFlux::surfaceThicknessFlux(LevelData<FArrayBox>& a_flux,
+					  const AmrIceBase& a_amrIce, 
+					  int a_level, Real a_dt)
+{
+  // a_flux is the output gaussian blurred flux
+  
+  Vector<LevelData<FArrayBox>* > flux;
+  Vector<LevelData<FArrayBox>* > flux_blur;
+  
+  //const LevelData<FArrayBox>& levelOldThickness = *m_old_thickness[a_level]; 
+  
+  for (int lev = 0; lev <= a_amrIce.finestLevel() ; lev++)
+   {
+    flux.push_back(new LevelData<FArrayBox>(a_amrIce.grids(lev), a_flux.nComp(), a_flux.ghostVect()));
+	m_gauss->surfaceThicknessFlux(*flux[lev], a_amrIce, lev, a_dt );
+    flux_blur.push_back(new LevelData<FArrayBox>(a_amrIce.grids(lev), a_flux.nComp(), a_flux.ghostVect()));
+	m_gauss->surfaceThicknessFlux(*flux_blur[lev], a_amrIce, lev, a_dt );
+   }
+  
+  AmrIce* ai_ptr = dynamic_cast<AmrIce*> ( const_cast<AmrIceBase*> ( &a_amrIce ) );
+  ai_ptr->helmholtzSolve(flux_blur, flux, m_alpha, m_beta);
+  
+  for (int numRepeats = 0; numRepeats < 2; numRepeats++) {
+  for (int lev = 0; lev <= a_amrIce.finestLevel() ; lev++)
+   {
+    (*flux_blur[lev]).copyTo(Interval(0,0), *flux[lev], Interval(0,0));
+   }
+  ai_ptr->helmholtzSolve(flux_blur, flux, m_alpha, m_beta);
+  }
+    
+  // Need to repopulate a_flux
+  (*flux_blur[a_level]).copyTo(Interval(0,0), a_flux, Interval(0,0));
+  
+  //m_gauss->surfaceThicknessFlux(a_flux, a_amrIce, a_level,a_dt );
+  
+  for (int lev = 0; lev <= a_amrIce.finestLevel() ; lev++)
+   {
+    delete flux[lev]; flux[lev] = NULL;
+   }
+   
+}*/
 
 /// factory method
 /** return a pointer to a new SurfaceFlux object
@@ -645,6 +697,44 @@ void TargetThicknessFlux::surfaceThicknessFlux(LevelData<FArrayBox>& a_flux,
       a_flux[dit] *= factor;
     }
 }
+
+
+/// factory method
+/** return a pointer to a new SurfaceFlux object
+ */
+SurfaceFlux* ConstantThicknessFlux::new_surfaceFlux()
+{
+  return static_cast<SurfaceFlux*>(new ConstantThicknessFlux(m_constant));
+}
+
+ConstantThicknessFlux::ConstantThicknessFlux(SurfaceFlux* a_constant)
+{
+  m_constant = a_constant->new_surfaceFlux();
+}
+
+ConstantThicknessFlux::~ConstantThicknessFlux()
+{
+  if (m_constant != NULL)
+    {
+      delete m_constant; m_constant = NULL;
+    }
+}
+
+void ConstantThicknessFlux::surfaceThicknessFlux(LevelData<FArrayBox>& a_flux,
+					       const AmrIceBase& a_amrIce, 
+					       int a_level, Real a_dt)
+{
+  
+  m_constant->surfaceThicknessFlux(a_flux, a_amrIce, a_level, a_dt );
+  Real factor = 1/a_dt;
+  for (DataIterator dit (a_flux.disjointBoxLayout()); dit.ok(); ++dit)
+    {
+      a_flux[dit] -= a_amrIce.geometry(a_level)->getH()[dit];
+      a_flux[dit] *= factor;
+      //a_flux[dit] *= 0.9;
+    }
+}
+
 
 
 

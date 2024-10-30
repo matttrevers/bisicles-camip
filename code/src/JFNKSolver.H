@@ -290,8 +290,8 @@ public:
 
     /// type of linear solver
     LinearSolverType m_linearSolverType;
-    ///maximum number of Newton steps for general and initial solves;
-    int m_maxIter, m_maxIter_init;
+    ///maximum number of Newton steps;
+    int m_maxIter;
     /// absolute tolerance for convergence test;
     Real m_absTol; 
     /// relative tolerance for convergence test; 
@@ -486,7 +486,7 @@ public:
 		    Vector<LevelData<FArrayBox>* >& a_addedIce,
 		    Vector<LevelData<FArrayBox>* >& a_removedIce,
 		    Real& a_initialResidualNorm, Real& a_finalResidualNorm,
-		    const Real a_convergenceMetric, 
+		    const Real a_convergenceMetric,
                     const Vector<LevelData<FArrayBox>* >& a_rhs,
                     const Vector<LevelData<FArrayBox>* >& a_C,
 		    const Vector<LevelData<FArrayBox>* >& a_C0,
@@ -504,7 +504,6 @@ public:
      
      if a_linear == true, then the equation is L[u*] u = r, where u* is the input a_u, 
      and u is the output. This option is useful for solving e.g the adjoint equation.
-
    
   */ 
   virtual int solve(Vector<LevelData<FArrayBox>* >& a_horizontalVel,
@@ -513,7 +512,7 @@ public:
 		    Vector<LevelData<FArrayBox>* >& a_removedIce,
 		    Real& a_initialResidualNorm, Real& a_finalResidualNorm,
 		    const Real a_convergenceMetric,
-		    bool a_linear, 
+		    const bool a_linear,
                     const Vector<LevelData<FArrayBox>* >& a_rhs,
                     const Vector<LevelData<FArrayBox>* >& a_C,
 		    const Vector<LevelData<FArrayBox>* >& a_C0,

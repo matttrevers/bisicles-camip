@@ -54,24 +54,22 @@ BasalFrictionPowerLaw::computeAlpha(FArrayBox& a_alpha,
 				    const Box& a_box) const
 {
   const Real mm1 = m_m - 1.0;
-  FArrayBox hab(a_box,1);
-  hab.copy(a_coords.getThicknessOverFlotation()[a_dit]);
-  FArrayBox h(a_box,1);
-  h.copy(a_coords.getH()[a_dit]);
-  const Real& w = m_oceanConnectivityCoef;
-  FArrayBox heff(a_box,1);
-  heff.axby(hab, h, w, 1.0-w);
-  //heff.copy(h);
+  const FArrayBox& thckOverFlotation = a_coords.getThicknessOverFlotation()[a_dit];
   const BaseFab<int>& mask = a_coords.getFloatingMask()[a_dit];
 
   FArrayBox Cscale(a_C.box(), a_C.nComp());
   Cscale.copy(a_C); Cscale /= std::pow(a_scale, m_m);
   
+  
+	ParmParse plPP("BasalFrictionPowerLaw");
+	bool useJoughin = false;
+	plPP.query("useJoughin",useJoughin);
+  
   const Real pexp = (m_includeEffectivePressure)?m_m:0.0;
   FORT_BFRICTIONPOWER(CHF_FRA1(a_alpha,0),
 		      CHF_CONST_FRA(a_basalVel),
 		      CHF_CONST_FRA1(Cscale,0),
-		      CHF_CONST_FRA1(heff,0),
+		      CHF_CONST_FRA1(thckOverFlotation,0),
 		      CHF_CONST_FIA1(mask,0),
 		      CHF_CONST_REAL(mm1),
 		      CHF_CONST_REAL(pexp),
@@ -82,7 +80,7 @@ BasalFrictionPowerLaw::computeAlpha(FArrayBox& a_alpha,
       FORT_BFRICTIONJOUGHIN(CHF_FRA1(a_alpha,0),
 			    CHF_CONST_FRA(a_basalVel),
 			    CHF_CONST_REAL(m_fastSlidingSpeed),
-			    CHF_CONST_FRA1(heff,0),
+			    CHF_CONST_FRA1(thckOverFlotation,0),
 			    CHF_CONST_REAL(m_highThickness),
 			    CHF_CONST_REAL(m_m),
 			    CHF_BOX(a_box));
@@ -218,15 +216,8 @@ BasalFrictionRelation::parse(const char* a_prefix, int a_recursion)
 	plPP.query("fastSlidingSpeed", fastSlidingSpeed);
 	Real highThickness = -HUGE_THICKNESS; // choosing a negative value is equivalent to highThickness -> infinity
 	plPP.query("highThickness", highThickness);
-
-	Real oceanConnectivityCoef = 1.0;
-	plPP.query("oceanConnectivityCoef",oceanConnectivityCoef );
-	CH_assert((oceanConnectivityCoef >= 0.0) && (oceanConnectivityCoef <= 1.0));
 	
-	BasalFrictionPowerLaw*  pl = new BasalFrictionPowerLaw(m,fastSlidingSpeed,
-							       highThickness,
-							       includeEffectivePressure,
-							       oceanConnectivityCoef);
+	BasalFrictionPowerLaw*  pl = new BasalFrictionPowerLaw(m,fastSlidingSpeed,highThickness,includeEffectivePressure);
 	basalFrictionRelationPtr = static_cast<BasalFrictionRelation*>(pl);
       }
   else if (type == "pressureLimitedLaw")

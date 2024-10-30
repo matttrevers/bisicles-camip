@@ -59,7 +59,7 @@ class InverseIceVelocitySolver :  public IceVelocitySolver
 
 public:
   
-  virtual void setPreviousTime(Real a_time) =0;
+
   
   /**
      Create a BasalFriction object given an AMR hierarchy of data
@@ -192,9 +192,6 @@ public:
     /// time delay between optmizations. Allows time-dependent inverse problems
     /// without re-doing the optimization at every time step.
     Real m_minTimeBetweenOptimizations;
-
-    /// estimate of typical timestep. Just here to turn times into integers for file names
-    Real m_dtTypical;
     
     enum BoundMethod {none, projection, MAX_BOUND_METHOD};
     /// Method to enforce constraints: none, or projection. default projection
@@ -208,8 +205,6 @@ public:
     bool m_optimizeX0;
     /// attempt to optimize w.r.t X1?
     bool m_optimizeX1;
-    /// evaluate unregluarized gradient of objective with respect to mucoef (or rather, X1) in the shelf only?
-    bool m_gradMuCoefShelfOnly;
     
     /// Lower bound on \f$X_0 = \ln C - \ln C_0\f$. Set with with <prefix>.lowerX0
     Real m_lowerX0;
@@ -250,9 +245,6 @@ public:
     /// Coefficient of \f$\int _\Omega (\nabla \phi )^2 d \Omega \f$ in \f$J\f$. Set with <prefix>.gradMuCoefsqRegularization
     Real m_gradMuCoefsqRegularization; 
 
-    
-
-    
     /// Coefficient of \f$\int _\Omega (\nabla X_0 )^2 d \Omega \f$ in \f$J\f$. Set with <prefix>.gradX0sqRegularization
     Real m_gradX0sqRegularization; 
 
@@ -276,6 +268,9 @@ public:
 
     /// Maximum number of 'outer' nonlinear conjugate gradient iterations. Set with <prefix>.CGmaxIter, default 16
     Real m_CGmaxIter;
+	
+    /// Minimm number of 'outer' nonlinear conjugate gradient iterations. Set with <prefix>.CGminIter, default 1. Added by MJT
+    Real m_CGminIter;
 
     /// Tolerance for the 'outer' nonlinear conjugate gradient method. Set with <prefix>.CGtol, default 1.0e-3
     Real m_CGtol;
@@ -294,6 +289,9 @@ public:
 
     /// Give up when succesive CG steps don't progress quickly enough . Set with <prefix>.CGhang, default 0.999
     Real m_CGhang;
+	
+    /// Limit for CGhang, above which the run will continue. Default 10. Added by MJT.
+    Real m_CGhangLimit;
 
     /// Restart CG at a fixed interval. Set with <prefix>.CGrestartInterval, default 9999
     Real m_CGrestartInterval;
@@ -328,6 +326,13 @@ public:
     SurfaceData* m_gradientFactor;
 
     int m_outerCounter;
+	
+	/// MJT - 2021-05-18 - Include the option to prioritise the shear margins in the optimization of phi through the calculation of a quantity S
+	bool m_optimizePhiForShearMargins;
+	bool m_optimizePhiForHighStrain;
+	bool m_optimizeCForLowShear;
+	bool m_optimizeCForLowStrain;
+	bool m_useModelledShearMetric;
 
     
 
@@ -387,6 +392,9 @@ private:
 
   //calculate the rhs to the adjoint equation, and the misfits
   void computeAdjointRhs();
+
+  /// MJT - Compute S, a metric which quantifies the shear strain (i.e. identifies the shear margins)
+  void computeShearStrainMetric(Vector<LevelData<FArrayBox>* >& a_g);
 
   // add directional derivatives of unregularized problem to a_g
   void computeGradient(Vector<LevelData<FArrayBox>* >& a_g, 
@@ -521,6 +529,14 @@ private:
   
   /// misfit term \f$|| g(\nabla \cdot ( u h)  , \nabla \cdot ( u_o h_o) ) ||^2_2\f$
   Vector<LevelData<FArrayBox>*> m_divuhMisfit;
+  
+  /// MJT - 2021-05-18
+  Vector<LevelData<FArrayBox>*> m_S;
+  Vector<LevelData<FArrayBox>*> m_Sminus;
+  
+  /// MJT - 2021-08-19
+  Vector<LevelData<FArrayBox>*> m_E;
+  Vector<LevelData<FArrayBox>*> m_Eminus;
 
   //physics pointers
   BasalFrictionRelation* m_basalFrictionRelation;
@@ -544,11 +560,6 @@ public:
 
   ~InverseVerticallyIntegratedVelocitySolver();
 
-  void setPreviousTime(Real a_time)
-  {
-    m_prev_time = a_time;
-  }
-  
   void define(const ProblemDomain& a_coarseDomain,
 	      ConstitutiveRelation* a_constRel,
 	      BasalFrictionRelation* a_FrictionRel,

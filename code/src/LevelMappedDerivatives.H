@@ -70,8 +70,8 @@ computeFCDerivatives(LevelData<FluxBox>& a_fcDeriv,
                      const LevelSigmaCS& a_coordSys,
                      const Interval& a_comps,
                      const Interval& a_derivDirections,
-                     const IntVect& a_derivGhost = IntVect::Zero,
-		     bool oneSideMask = false);
+                     const IntVect& a_derivGhost = IntVect::Zero);
+
 
 
 /// compute face-centered derivatives of cell-centered data

@@ -190,45 +190,23 @@ public:
   /// advance solution until either max_time or max_step are reached
   void run(Real a_max_time, int a_max_step);
 
-  /// advance solution until either max_time or max_step are reached (new version)
-  void run2(Real a_max_time, int a_max_step);
-  
   /// compute one timestep
   void timeStep(Real a_dt);
 
-  /// compute one timestep (new version)
-  void timeStep2(Real a_dt);
-
-  /// update ghost cells of a_f using piecewise linear interpolation
-  void updateGhostPWL(Vector<LevelData<FArrayBox> *>& a_f);
-  
-  /// set H += (source terms - div(u H ) ) * a_dt  
-  void updateH(Vector<LevelData<FArrayBox>*>& a_H,
-	       Vector<LevelData<FluxBox>* >& a_H_half,
-	       Real a_dt);
-  
   // compute face-centered half-time ice thickness using ppm
-  void computeH_half(Vector<LevelData<FluxBox>* >& a_H_half,
-		     Vector<LevelData<FArrayBox> * >& a_H,
-		     Real a_dt);
+  void computeH_half(Vector<LevelData<FluxBox>* >& a_H_half, Real a_dt);
 
   // compute thickness fluxes
   void computeThicknessFluxes(Vector<LevelData<FluxBox>* >& a_vectFluxes,
                               const Vector<LevelData<FluxBox>* >& a_H_half,
                               const Vector<LevelData<FluxBox>* >& a_faceVelAdvection);
 
-  // update geometry given ice thickness and bedrock elevation
-  void updateGeometry(Vector<LevelData<FArrayBox> *>& a_thk,
-		      Vector<LevelData<FArrayBox> *>& a_topg);
-
-
-  Vector<RefCountedPtr<LevelSigmaCS> > copyGeometry();
-  
   // update ice thickness *and* bedrock elevation
   void updateGeometry(Vector<RefCountedPtr<LevelSigmaCS> >& a_vect_coordSys_new, 
                        Vector<RefCountedPtr<LevelSigmaCS> >& a_vectCoords_old, 
                        const Vector<LevelData<FluxBox>* >& a_vectFluxes, 
-                       Real a_dt);
+                       Real a_dt,
+			           const AmrIce& a_amrIce);
   
   
 
@@ -460,6 +438,11 @@ public:
   {
     return m_dt;
   }
+  
+  int current_timestep() const		// MJT
+  {
+    return m_cur_step;
+  }
 
   int finestLevel() const
   {
@@ -494,11 +477,6 @@ public:
   const Vector<int>& refRatios() const { return m_refinement_ratios;}
 
   const Vector<Real>& amrDx() const {return m_amrDx;}
-
-  const LevelData<FArrayBox>* iceFraction(int a_level) const
-  {
-     return m_iceFrac[a_level];
-  }
 
   const LevelData<FArrayBox>* velocity(int a_level) const
   {
@@ -555,13 +533,7 @@ public:
   {
     return m_iceFrac[a_level];
   };
-  /// return const ref to real-valued 'mu coefficient' on level a_level
-  //** useful for calving models **/
-  const LevelData<FArrayBox>& muCoef(int a_level) const
-  {
-    return *m_cellMuCoef[a_level];
-  }
-  
+
   /// return reference to full AMR ice fraction
   Vector<LevelData<FArrayBox>* >& amrIceFrac() 
   {
@@ -579,6 +551,23 @@ public:
   Real groundingLineProximityScale() const
   {
     return m_groundingLineProximityScale;
+  }
+
+  const LevelData<FArrayBox>* calvingFrontProximity(int a_level) const;
+
+  Real calvingFrontProximityScale() const
+  {
+    return m_calvingFrontProximityScale;
+  }
+
+  Real calvingFrontProximityFactor() const
+  {
+    return m_calvingFrontProximityFactor;
+  }
+
+  Real calvingFrontProximityThreshold() const
+  {
+    return m_calvingFrontProximityThreshold;
   }
   
 
@@ -604,9 +593,67 @@ public:
 
   /// access function for surface heat flux
   const  Vector<LevelData<FArrayBox>* >& surfaceHeatFlux() const {return m_sHeatFlux; }
+  
+  
+  // MJT moved these here, previously private 
+  /// solve a_alpha * phi - a_beta * laplacian(phi) = a_rhs
+  /// and grad(phi).n = 0 on the domain boundaries
+  static void helmholtzSolve
+  (Vector<LevelData<FArrayBox>* >& a_phi,
+   const Vector<LevelData<FArrayBox>* >& a_rhs,
+   const Vector<DisjointBoxLayout>& a_grids,
+   int a_finest_level, Real a_crse_dx,
+   const Vector<int> a_refinement_ratios,
+   const Vector<ProblemDomain> a_domain,
+   Real a_alpha, Real a_beta);
+ 
+  /// solve a_alpha * phi - a_beta * laplacian(phi) = a_phi
+  /// and grad(phi).n = 0 on the domain boundaries
+  static void helmholtzSolve
+  (Vector<LevelData<FArrayBox>* >& a_phi,
+   const Vector<DisjointBoxLayout>& a_grids,
+   int a_finest_level, Real a_crse_dx,
+   const Vector<int> a_refinement_ratios,
+   const Vector<ProblemDomain> a_domain,
+   Real a_alpha, Real a_beta);
+
+
 
 protected:
 
+  /// solve a_alpha * phi - a_beta * laplacian(phi) = a_rhs
+  /// and grad(phi).n = 0 on the domain boundaries
+  void helmholtzSolve(Vector<LevelData<FArrayBox>* >& a_phi,
+			     const Vector<LevelData<FArrayBox>* >& a_rhs, 
+			     Real a_alpha, Real a_beta) const
+  {
+    helmholtzSolve (a_phi,
+		    a_rhs,
+		    m_amrGrids,
+		    m_finest_level,
+		    m_amrDx[0],
+		    m_refinement_ratios,
+		    m_amrDomains,
+		    a_alpha,
+		    a_beta);
+  }
+
+  /// solve a_alpha* phi - a_beta * laplacian(phi)  = phi'
+  /// and grad(phi).n = 0 on the domain boundaries
+  void helmholtzSolve(Vector<LevelData<FArrayBox>* >& a_phi,
+		      Real a_alpha, Real a_beta) const
+  {
+    helmholtzSolve (a_phi,
+		    m_amrGrids,
+		    m_finest_level,
+		    m_amrDx[0],
+		    m_refinement_ratios,
+		    m_amrDomains,
+		    a_alpha,
+		    a_beta);
+  
+
+  }
   
 
 
@@ -643,7 +690,7 @@ protected:
   virtual void solveVelocityField(bool a_forceSolve = false, Real a_convergenceMetric = -1.0);
 
   /// compute RHS for velocity field solve
-  virtual void defineVelRHS(Vector<LevelData<FArrayBox>* >& a_vectRhs );
+  virtual void defineVelRHS(Vector<LevelData<FArrayBox>* >& a_vectRhs);
 
   /// set basal friction coefficients C,C0 prior to velocity solve
   virtual void setBasalFriction(Vector<LevelData<FArrayBox>* >& a_C, Vector<LevelData<FArrayBox>* >& a_C0);
@@ -694,29 +741,35 @@ protected:
   void advectIceFrac(Vector<LevelData<FArrayBox>* >& a_iceFrac,
                      const Vector<LevelData<FluxBox>* >& a_faceVelAdvection,  
                      Real a_dt);
-  
-  /// general purpose *non-conservative* advection  df/dt + u. grad(f) = 0
-  /**
-     enforce df/dt = 0 where dx|grad(f)| > a_ tol
-  */
-  void PGAdvect(Vector<LevelData<FArrayBox>* >& a_f,
-		const Vector<LevelData<FluxBox>* >& a_u,
-		Real a_dt, Real a_tol);
-  
-  /// update real-valued ice fraction through advection from neighboring cells
-  void advectIceFrac2(Vector<LevelData<FArrayBox>* >& a_iceFrac,
-		      const Vector<LevelData<FluxBox>* >& a_faceVelAdvection,  
-		      Real a_dt);
 
-  /// single FAB update real-valued ice fraction through advection from neighboring cells 
-  void advectIceFrac(FArrayBox& a_iceMask, const FluxBox& a_faceVelAdvection,
-		     const FluxBox& a_faceVelCalving, const Box& a_box,   Real a_dx, Real a_dt);
+
+  // /// update real-valued ice fraction through advection from neighboring cells
+  // /**
+  //    Also increment a_thicknessSource based on the calving rate
+  // */
+  // // void advectIceFrac(Vector<LevelData<FArrayBox>* >& a_iceFrac,
+  // // 		     Vector<LevelData<FArrayBox>* >& a_thicknessSource,
+  // //                    const Vector<LevelData<FluxBox>* >& a_faceVelAdvection,
+  // // 		     const Vector<LevelData<FluxBox>* >& a_thicknessFlux,
+  // //                    Real a_dt);
   
-  // compute face centered calving velocity. Typically opposed to ice velocity. 
-  void computeFaceCalvingVel(LevelData<FluxBox>& a_faceCalvingVel,
-			     const LevelData<FluxBox>& a_faceIceVel,
-			     const DisjointBoxLayout& a_grids,
-			     int a_lev);
+  // /// update real-valued ice fraction through application of the calving rate
+  // /**
+  //    Also increment a_thicknessSource based on the calving rate
+  // */
+  // // void advectIceFracUpstream(Vector<LevelData<FArrayBox>* >& a_iceFrac,
+  // // 			     Vector<LevelData<FArrayBox>* >& a_thicknessSource,
+  // // 			     const Vector<LevelData<FluxBox>* >& a_faceVelAdvection,
+  // // 			     const Vector<LevelData<FArrayBox> *>& a_calvingRate,
+  // // 			     Real a_subDt, Real a_dt);
+
+  // // /// update real-valued ice fraction through advection from neighboring cell
+  // // void advectIceFracDownstream(Vector<LevelData<FArrayBox>* >& a_iceFrac,
+  // // 			       Vector<LevelData<FArrayBox>* >& a_thicknessSource,
+  // // 			       const Vector<LevelData<FluxBox>* >& a_faceVelAdvection,
+  // // 			       const Vector<LevelData<FluxBox>* >& a_thicknessFlux,
+  // // 			       const Vector<LevelData<FArrayBox> *>& a_calvingRate,
+  // // 			       Real a_subDt, Real a_dt);
 
   /// update covered cells, ghost cells etc, of a_iceFrac
   void updateInvalidIceFrac(Vector<LevelData<FArrayBox> *> a_iceFrac);
@@ -724,18 +777,12 @@ protected:
   /// compute timestep
   Real computeDt();
 
-  /// compute CFL timestep
-  Real computeDtCFL();
-  
   /// compute timestep at initial time
   Real computeInitialDt();
 
   //set an entire amr hierarchy to zero
   void setToZero(Vector<LevelData<FArrayBox>*>& a_data);
 
-  /// Advect thickness and mask over time a_dt given the current ice velocity
-  void advectH(Vector<LevelData<FArrayBox>*>& a_H, Vector<LevelData<FArrayBox>*>& a_frac,  Real a_dt);
-  
   /// implicit solve for diffusive fluxes
   void implicitThicknessCorrection(Real a_dt,
 				   const Vector<LevelData<FArrayBox>* >& a_sts,
@@ -745,9 +792,11 @@ protected:
   
   void applyCalvingCriterion(CalvingModel::Stage a_stage);
   
+
   void eliminateRemoteIce();
 
-  /// solve a_alpha * phi - a_beta * laplacian(phi) = a_rhs
+  
+/*  /// solve a_alpha * phi - a_beta * laplacian(phi) = a_rhs
   /// and grad(phi).n = 0 on the domain boundaries
   void helmholtzSolve(Vector<LevelData<FArrayBox>* >& a_phi,
 		      const Vector<LevelData<FArrayBox>* >& a_rhs, 
@@ -756,8 +805,9 @@ protected:
   /// solve a_alpha* phi - a_beta * laplacian(phi)  = phi'
   /// and grad(phi).n = 0 on the domain boundaries
   void helmholtzSolve(Vector<LevelData<FArrayBox>* >& a_phi,
-		      Real a_alpha, Real a_beta) const;
- 
+		      Real a_alpha, Real a_beta) const;*/
+
+
 
 #if BISICLES_Z == BISICLES_LAYERED
  
@@ -860,7 +910,12 @@ protected:
   /** This option exists primarly so that we can run the CISM circular 
       shelf test problem
   */
-  bool  m_reset_floating_friction_to_zero;
+  bool m_reset_floating_friction_to_zero;
+  Real m_reset_floating_friction_factor;
+  
+  /// MJT - reduce basal friction linearly to zero for grounded ice where the thickness above flotation is below a certain fraction of the total thickness
+  bool m_reduce_grounded_friction;
+  Real m_reduce_grounded_friction_limit;
 
   /// pointer to a GodunovPhysics for thickness advection
   GodunovPhysics* m_thicknessPhysPtr;
@@ -1122,6 +1177,11 @@ protected:
 
   // isothermal model ?
   bool m_isothermal;
+  
+  // parameters for the replacement to the CliffCollapseCalvingModel
+  bool m_cliff_collapse;
+  Real m_cliff_collapse_max_height;
+  Real m_cliff_collapse_recession_rate;
  
   //depth of water in surface crevasses
   Real m_waterDepth;
@@ -1140,9 +1200,6 @@ protected:
   // acceleration due to gravity
   Real m_gravity;
 
-  //mantle density
-  Real m_mantleDensity;
-  
   // size of unit time (for velocity & time step *only*, other quantities are SI) in seconds
   Real m_seconds_per_unit_time;
   
@@ -1209,28 +1266,27 @@ protected:
   // possibly won't even need surface and basal temperature
   // field, but if we do they will need to be 2D
 #endif
-  //the thickness source will have two components, from the surface and base
+  //the thickness source will have three components, from the surface and base
+  //and distributed throught the volume.
   //Although they are combined for thickness evolution, they must
   //be kept seperate for the internalEnergy calculation. 
   mutable Vector<LevelData<FArrayBox>* > m_surfaceThicknessSource;
   mutable Vector<LevelData<FArrayBox>* > m_basalThicknessSource;
+  mutable Vector<LevelData<FArrayBox>* > m_volumeThicknessSource;
 
-  
- 
   /// modify the source terms (surface,basal,volume) to keep all or part of the ice sheet/shelf steady
-  // MJT - 2022/08/03 - UKESM changes, this now takes more arguments.
-  void setStableSources(FArrayBox& a_sts,FArrayBox& a_bts, 
+  void setStableSources(FArrayBox& a_sts,FArrayBox& a_bts, FArrayBox& a_vts,
 			const FArrayBox& a_divuh, const BaseFab<int>& a_mask,
-			const FArrayBox& a_stableSourcesMask, const FArrayBox& a_oceanConn,
-			const FArrayBox& a_oldH, const FArrayBox& a_topg, Real rhoi, Real rhow,
+			const FArrayBox& a_CFProximity,
+			FArrayBox& a_oldH, FArrayBox& a_topg, Real rhoi, Real rhow, 
 			const Box& a_box) const;
   
   Vector<LevelData<FArrayBox>* > m_divThicknessFlux; // set to -dH/dt
-  //thickness of calved ice
-  mutable Vector<LevelData<FArrayBox>* > m_calvedIceArea;
+  //thickness of calved ice 
   Vector<LevelData<FArrayBox>* > m_calvedIceThickness;
   Vector<LevelData<FArrayBox>* > m_removedIceThickness;
   Vector<LevelData<FArrayBox>* > m_addedIceThickness;
+  Vector<LevelData<FArrayBox>* > m_calvedThicknessSource;
 
 
   //cell centered storage for the stress-balance equation coefficients
@@ -1255,7 +1311,19 @@ protected:
   // scale length for grounding line proximity
   Real m_groundingLineProximityScale;
   int m_groundingLineProximityCalcType;
-  void updateGroundingLineProximity() const;
+  void updateGroundingLineProximity() const;  
+
+  //Scalar field that varies in the ice shelf from 0 at the grounding line
+  mutable Vector<LevelData<FArrayBox>* > m_calvingFrontProximity;
+  // cache validity flag;
+  mutable bool m_calvingFrontProximity_valid;
+  // scale length for grounding line proximity
+  Real m_calvingFrontProximityScale;
+  Real m_calvingFrontProximityFactor;
+  Real m_calvingFrontProximityThreshold;
+  bool m_grounded_ice_basal_flux_is_dhdt_tapered;
+  int m_calvingFrontProximityCalcType;
+  void updateCalvingFrontProximity() const;
   
   /// if true, report discharge of solid ice from the ice edge
   bool m_report_discharge;
@@ -1352,6 +1420,9 @@ protected:
   /** this can be convenient when working with the solverBenchmark
    */
   bool m_write_presolve_plotfiles;
+  
+  // MJT - if true, include the thickness above flotation in plot files
+  bool m_write_thickness_above_flotation;
 
   /// 
   int m_check_interval;
@@ -1359,10 +1430,6 @@ protected:
   // if true, allow thickness to change in time
   bool m_evolve_thickness; 
 
-  // if true, allow ice frac to change in time
-  bool m_evolve_ice_frac;
-  bool m_evolve_ice_frac_2; // new version. Hopefully better.
-  
   //if true, allow velocity field to change in time
   bool m_evolve_velocity;
 
@@ -1376,15 +1443,7 @@ protected:
   bool m_floating_ice_basal_flux_is_dhdt;
   bool m_floating_ice_basal_flux_is_min_dhdt;
   bool m_grounded_ice_basal_flux_is_dhdt;
-  
-  // MJT - 2022/08/03 - Changes for UKESM: mask stable sources and prohibit grounding line retreat for stable ice shelves
-  bool m_mask_stable_sources;
-  std::string m_stable_sources_mask_file, m_stable_sources_mask_name;
-  RefCountedPtr<LevelData<FArrayBox> > m_stable_sources_mask;
-  Real m_stable_sources_mask_dx;
   bool m_grounding_line_stable;
-  
-  
 
   /** if true, scale thickness sources (surface flux and basal flux) by 
       iceFrac values (allows for effective partial cells)
@@ -1441,6 +1500,14 @@ private:
       delete *a_ptrPtr;
     *a_ptrPtr = new LevelData<T>(a_grids, a_nComp, a_ghost);
   }
+
+  /// copy velocity values from upwind full cells to partial cells
+  void upwindPartialCellVelocity();
+  
+    /// average velocity values from grounded full cells to partial cells
+  void bodgePartialCellVelocity();
+  
+  void exchangeValues(); 	// MJT
 
 
 public:
@@ -1538,6 +1605,8 @@ private:
     for (int i = 0; i < m_observers.size(); i++)
       m_observers[i]->notify(a_n, *this);
   }
+
+
 
 };  
   

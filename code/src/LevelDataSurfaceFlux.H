@@ -31,7 +31,7 @@ class LevelDataSurfaceFlux : public SurfaceFlux
 public:
 
    LevelDataSurfaceFlux(RefCountedPtr<LevelData<FArrayBox> > a_flux,
-			const RealVect& a_dx, const Real& a_defaultValue=0.0)
+			const RealVect& a_dx, const Real& a_defaultValue)
      :m_timeFileMap(NULL), m_startTime(-1.2345678e+300), m_endTime(1.2345678e+300),
       m_defaultValue(a_defaultValue),
       m_startFlux(a_flux), m_endFlux(a_flux),m_dx(a_dx),m_verbose(true),m_name(""),
@@ -40,11 +40,10 @@ public:
    {
    }
   
-  LevelDataSurfaceFlux(RefCountedPtr<std::map<Real,
-                       std::string> >& a_timeFileMap, 
+  LevelDataSurfaceFlux(RefCountedPtr<std::map<Real, std::string> >& a_timeFileMap, 
 		       const std::string& a_name,
 		       const bool& a_linearInterp,
-		       const Real& a_defaultValue=0.0)
+		       const Real& a_defaultValue)
     :m_timeFileMap(a_timeFileMap), m_startTime(1.2345678e+300), m_endTime(-1.2345678e+300),
      m_defaultValue(a_defaultValue),
      m_startFlux(new LevelData<FArrayBox>()),m_endFlux(new LevelData<FArrayBox>()),
@@ -117,11 +116,10 @@ class MultiLevelDataSurfaceFlux : public SurfaceFlux
 public:
 
  
-  MultiLevelDataSurfaceFlux(RefCountedPtr<std::map<Real,std::string> >& a_timeFileMap, 
+  MultiLevelDataSurfaceFlux(RefCountedPtr<std::map<Real, std::string> >& a_timeFileMap, 
 			    const std::string& a_name,
-			    const bool& a_linearInterp,
-                            const Real& a_defaultValue=0.0)
-    :m_timeFileMap(a_timeFileMap), m_startTime(1.2345678e+300), m_endTime(-1.2345678e+300), m_defaultValue(a_defaultValue),
+			    const bool& a_linearInterp)
+    :m_timeFileMap(a_timeFileMap), m_startTime(1.2345678e+300), m_endTime(-1.2345678e+300),
      m_verbose(true),m_name(a_name), m_linearInterp(a_linearInterp)
   {
   }
@@ -140,8 +138,7 @@ public:
     MultiLevelDataSurfaceFlux* ptr;
     if (m_timeFileMap != NULL)
       {
-	ptr = new MultiLevelDataSurfaceFlux(m_timeFileMap,m_name,m_linearInterp,
-                                            m_defaultValue);
+	ptr = new MultiLevelDataSurfaceFlux(m_timeFileMap,m_name,m_linearInterp);
       }
     // else
     //   {
@@ -163,7 +160,7 @@ public:
 protected:
 
   RefCountedPtr<std::map<Real,std::string> > m_timeFileMap;
-  Real m_startTime, m_endTime, m_defaultValue;
+  Real m_startTime, m_endTime;
   Vector<RefCountedPtr< LevelData<FArrayBox> > > m_startFlux;
   Vector<RefCountedPtr< LevelData<FArrayBox> > > m_endFlux;
   RealVect m_dxCrse;

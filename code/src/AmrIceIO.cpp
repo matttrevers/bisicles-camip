@@ -75,9 +75,6 @@ using std::string;
 #include "PythonInterface.H"
 #endif
 
-
-#include "BuelerGIA.H"
-
 #include "NamespaceHeader.H"
 
 
@@ -103,6 +100,7 @@ void AmrIce::setOutputOptions(ParmParse& a_pp)
   m_write_ismip6 = false;
   m_write_layer_velocities = false;
   m_write_mask = false;
+  m_write_thickness_above_flotation = false;		// MJT
   m_check_prefix = "chk.";
   m_check_interval = -1;
   m_check_overwrite = true;
@@ -130,6 +128,7 @@ void AmrIce::setOutputOptions(ParmParse& a_pp)
   a_pp.query("write_map_file", m_write_map_file);
   a_pp.query("write_mask",m_write_mask);
   a_pp.query("reduced_plot", m_reduced_plot);
+  a_pp.query("write_thickness_above_flotation",m_write_thickness_above_flotation);		// MJT
 
   
   std::string pn = "time_step";
@@ -294,6 +293,9 @@ AmrIce::writeAMRPlotFile()
 	  numPlotComps += 2; // calving rate and water depth
 	}
     }
+  
+  // MJT
+  if (m_write_thickness_above_flotation) numPlotComps += 1;  // thickness above flotation
 
 
 #endif
@@ -356,6 +358,9 @@ AmrIce::writeAMRPlotFile()
   string calvedThicknessSourceName("calvedThicknessSource");
   string calvingRateName("calvingRate");
   string waterDepthName("waterDepth");
+  
+  // MJT
+  string thicknessAboveFlotationName("thicknessAboveFlotation");
 
   Vector<string> vectName(numPlotComps);
   //int dThicknessComp;
@@ -558,6 +563,12 @@ AmrIce::writeAMRPlotFile()
 	  vectName[comp] = dragCoefName; comp++;
 	}
     }
+	
+  // MJT
+  if (m_write_thickness_above_flotation)
+    {
+      vectName[comp] = thicknessAboveFlotationName; comp++;
+    } 
 
   // allow observers to add variables to the plot file
   for (int i = 0; i < m_observers.size(); i++)
@@ -627,20 +638,6 @@ AmrIce::writeAMRPlotFile()
 	  (*m_calvingModelPtr).getWaterDepth(levelWaterDepth, *this, lev);
 	}
 
-
-      // set these up here because calls to dragCoefficient may lead
-      // to calls to things like CoarseAverage which contain dataIterator loops
-      LevelData<FArrayBox>* dragCoefficientPtr = NULL;
-      LevelData<FArrayBox>* viscosityCoefficientPtr = NULL;
-      LevelData<FArrayBox>* viscousTensorPtr = NULL;
-      
-      if (m_write_viscousTensor)      
-        {
-          dragCoefficientPtr = const_cast<LevelData<FArrayBox>* >(dragCoefficient(lev));
-          viscosityCoefficientPtr = const_cast<LevelData<FArrayBox>*>(viscosityCoefficient(lev));
-          viscousTensorPtr = const_cast<LevelData<FArrayBox>*>(viscousTensor(lev));
-        }
-      
       DataIterator dit = m_amrGrids[lev].dataIterator();
       for (dit.begin(); dit.ok(); ++dit)
         {
@@ -850,13 +847,13 @@ AmrIce::writeAMRPlotFile()
 #endif
 	  if (m_write_viscousTensor)
 	    {
-	      thisPlotData.copy( (*dragCoefficientPtr)[dit],0,comp);
+	      thisPlotData.copy( (*dragCoefficient(lev))[dit],0,comp);
 	      comp++;
-	      thisPlotData.copy( (*viscosityCoefficientPtr)[dit],0,comp);
+	      thisPlotData.copy( (*viscosityCoefficient(lev))[dit],0,comp);
 	      comp++;
 	      if (!m_reduced_plot)
 		{
-		  thisPlotData.copy( (*viscousTensorPtr)[dit],0,comp, SpaceDim*SpaceDim);
+		  thisPlotData.copy( (*viscousTensor(lev))[dit],0,comp, SpaceDim*SpaceDim);
 		  comp += SpaceDim * SpaceDim;
 		}
 	    }
@@ -928,6 +925,14 @@ AmrIce::writeAMRPlotFile()
 		  comp++;
 		}
 	    }
+		
+        // MJT - are we including the thickness above flotation?
+        if (m_write_thickness_above_flotation)
+          {
+            const FArrayBox& thiccAF = levelCS.getThicknessOverFlotation()[dit];
+            thisPlotData.copy(thiccAF, 0, comp, 1);
+            ++comp;
+        } // MJT end thickness above flotation
 		
 	} // end loop over boxes on this level
 
@@ -1299,7 +1304,6 @@ AmrIce::writeCheckpointFile(const string& a_file)
   }
 #endif
 
-
   //allow observers to add checkpoint variables
   for (int i = 0; i < m_observers.size(); i++)
     {
@@ -1312,38 +1316,6 @@ AmrIce::writeCheckpointFile(const string& a_file)
 	  header.m_string[compStr] = vars[j].c_str();
 	}
     }
-
-  // Check if topographyFlux initialized and checkpoint Uplift and initial TOF.
-  // First check to see if the pointer is NULL
-  if (m_topographyFluxPtr != NULL)
-  {
-#ifdef BUELERGIA
-  // now use dynamic casting to see if we're looking at a BuelerGIAFlux
-    BuelerGIAFlux* giaFluxPtr = dynamic_cast<BuelerGIAFlux*>(m_topographyFluxPtr);
-    if (giaFluxPtr != NULL)
-    {
-      // we were able to cast to a BuelerGIAFlux pointer
-      sprintf(compStr, "component_%04d", nComp);
-      compName = "thicknessAboveFlotation0";
-      header.m_string[compStr] = compName;
-      nComp++;
-      sprintf(compStr, "component_%04d", nComp);
-      compName = "thicknessAboveFlotationOld";
-      header.m_string[compStr] = compName;
-      nComp++;
-      sprintf(compStr, "component_%04d", nComp);
-      compName = "upliftData";
-      header.m_string[compStr] = compName;
-      nComp++;
-      sprintf(compStr, "component_%04d", nComp);
-      compName = "udotData";
-      header.m_string[compStr] = compName;
-      nComp++;
-      header.m_real["giaUpdatedTime"] = giaFluxPtr->getUpdatedTime();
-    } // end if we have a BuelerGIAFlux
-#endif
-    // do any generic TopographyFlux sorts of things
-  } // end if there is a topographyFlux
 
   header.writeToFile(handle);
 
@@ -1411,46 +1383,14 @@ AmrIce::writeCheckpointFile(const string& a_file)
 	  write(handle, *m_bInternalEnergy[lev], "bInternalEnergyData", 
 		m_bInternalEnergy[lev]->ghostVect());
 #endif
-
 	  //allow observers to write to the checkpoint
 	  for (int i = 0; i < m_observers.size(); i++)
 	    {
 	      m_observers[i]->writeCheckData(handle, lev);
 	    }
         }
-    // Check if topographyFlux initialized and checkpoint Uplift and initial TOF.
-    // First check to see if the pointer is NULL
-    if (m_topographyFluxPtr != NULL && lev == 0)
-    {
-#ifdef BUELERGIA      
-    // now use dynamic casting to see if we're looking at a BuelerGIAFlux
-      BuelerGIAFlux* giaFluxPtr = dynamic_cast<BuelerGIAFlux*>(m_topographyFluxPtr);
-      if (giaFluxPtr != NULL)
-      {
-        // we were able to cast to a BuelerGIAFlux pointer   
-        if (s_verbosity >= 3) {
-          pout() << "Writing GIA checkpoint" << endl;
-        }
-        RefCountedPtr<LevelData<FArrayBox>> tmp;
-        tmp = giaFluxPtr->getTAF0();
-        write(handle, *tmp, "thicknessAboveFlotation0",
-          tmp->ghostVect());
-        tmp = giaFluxPtr->getTAFold();
-        write(handle, *tmp, "thicknessAboveFlotationOld",
-          tmp->ghostVect());
-        tmp = giaFluxPtr->getUn();
-        write(handle, *tmp, "upliftData",
-          tmp->ghostVect());
-        tmp = giaFluxPtr->getUdot();
-        write(handle, *tmp, "udotData",
-          tmp->ghostVect());
-      } // end if we have a BuelerGIAFlux
-#endif
-      // do any generic TopographyFlux sorts of things
-    } // end if there is a topographyFlux 
-
     }// end loop over levels
- 
+  
   handle.close();
 #endif
 }
@@ -1486,8 +1426,6 @@ AmrIce::readCheckpointFile(HDF5Handle& a_handle)
   bool containsIceFrac(false);
   bool containsBasalFriction(false);
   bool containsMuCoef(false);
-  bool containsTAF0(false);
-  bool containsUN(false);
 
   map<std::string, std::string>::const_iterator i;
   for (i = header.m_string.begin(); i!= header.m_string.end(); ++i)
@@ -1521,14 +1459,6 @@ AmrIce::readCheckpointFile(HDF5Handle& a_handle)
 	{
 	  containsMuCoef = true;
 	}
-      if (i->second == "thicknessAboveFlotation0")
-    {
-      containsTAF0 = true;
-    }
-      if (i->second == "upliftData")
-    {
-      containsUN = true;
-    }
     }
 
   if (s_verbosity >= 3)
@@ -1704,7 +1634,7 @@ AmrIce::readCheckpointFile(HDF5Handle& a_handle)
   m_vect_coordSys.resize(m_max_level+1);
   m_velRHS.resize(m_max_level+1);
   m_surfaceThicknessSource.resize(m_max_level+1,NULL);
-  m_calvedIceArea.resize(m_max_level+1,NULL);
+  m_volumeThicknessSource.resize(m_max_level+1,NULL);
   m_basalThicknessSource.resize(m_max_level+1,NULL);
   m_calvedIceThickness.resize(m_max_level+1, NULL);
   m_removedIceThickness.resize(m_max_level+1, NULL);
@@ -1836,7 +1766,8 @@ AmrIce::readCheckpointFile(HDF5Handle& a_handle)
           m_velocity[lev] = new LevelData<FArrayBox>(levelDBL, SpaceDim, 
                                                      ghostVect);
 
-          m_iceFrac[lev] = new LevelData<FArrayBox>(levelDBL, 1,m_num_thickness_ghost*IntVect::Unit ); 
+          m_iceFrac[lev] = new LevelData<FArrayBox>(levelDBL, 1, ghostVect);
+
 	  m_faceVelAdvection[lev] = new LevelData<FluxBox>(m_amrGrids[lev], 1, IntVect::Unit);
 	  m_faceVelTotal[lev] = new LevelData<FluxBox>(m_amrGrids[lev], 1, IntVect::Unit);
 #if BISICLES_Z == BISICLES_LAYERED
@@ -1853,7 +1784,7 @@ AmrIce::readCheckpointFile(HDF5Handle& a_handle)
 	  m_cellMuCoef[lev] = new LevelData<FArrayBox>(levelDBL, 1, ghostVect);
 	  m_velRHS[lev] = new LevelData<FArrayBox>(levelDBL, SpaceDim, IntVect::Zero);
 	  m_surfaceThicknessSource[lev] =  new LevelData<FArrayBox>(levelDBL,   1, IntVect::Unit) ;
-	  m_calvedIceArea[lev] = new LevelData<FArrayBox>(levelDBL, 1, IntVect::Unit);
+	  m_volumeThicknessSource[lev] = new LevelData<FArrayBox>(levelDBL, 1, IntVect::Unit);
 	  m_basalThicknessSource[lev] = new LevelData<FArrayBox>(levelDBL,   1, IntVect::Unit) ;
 	  m_calvedIceThickness[lev] =  new LevelData<FArrayBox>(levelDBL,   1, IntVect::Unit) ;
 	  m_removedIceThickness[lev] =  new LevelData<FArrayBox>(levelDBL,   1, IntVect::Unit) ;
@@ -1960,15 +1891,11 @@ AmrIce::readCheckpointFile(HDF5Handle& a_handle)
 	  if (containsIceFrac)
 	    {
 	      LevelData<FArrayBox>& iceFracData = *m_iceFrac[lev];
-	      bool not_redefine(false); // kludge to allow restart from checkpoints with ghostVector=(1,1), but makes me wonder why we bother
-	                            // to define earlier when read<T> redefines by default.
 	      dataStatus = read<FArrayBox>(a_handle,
 					   iceFracData,
 					   "iceFracData",
-					   levelDBL,
-					   Interval(0,0),
-					   not_redefine);
-
+				       levelDBL);
+          
 	      /// note that although this check appears to work, it makes a mess of a_handle and the next lot of data are not read...
 	      if (dataStatus != 0)
 		{
@@ -1977,7 +1904,7 @@ AmrIce::readCheckpointFile(HDF5Handle& a_handle)
 		  setIceFrac(levelThickness, lev);
 		} // end if no ice fraction in data
 	      else
-		{ 
+		{
 		  // ensure that ice fraction is set to zero where there's no ice
 		  // or not, since this should have been done before writing
 		  // updateIceFrac(m_vect_coordSys[lev]->getH(), lev);
@@ -2101,106 +2028,10 @@ AmrIce::readCheckpointFile(HDF5Handle& a_handle)
 	    {
 	      m_observers[i]->readCheckData(a_handle, header,  lev, levelDBL);
 	    }
-      // Check if topographyFlux initialized and checkpoint Uplift and initial TOF.
-      // First check to see if the pointer is NULL
-      if (m_topographyFluxPtr != NULL && lev == 0)
-      {
-#ifdef BUELERGIA	
-      // now use dynamic casting to see if we're looking at a BuelerGIAFlux
-        BuelerGIAFlux* giaFluxPtr = dynamic_cast<BuelerGIAFlux*>(m_topographyFluxPtr);
-        if (giaFluxPtr != NULL)
-        {
-          pout() << "Checkpoint GIA read-in." << endl;
-          // we were able to cast to a BuelerGIAFlux pointer
-          // set the time of the GIA object.
-          if (header.m_real.find("giaUpdatedTime") == header.m_real.end())
-          {
-            MayDay::Warning("checkpoint file does not contain GIA updated time, but not restarting, setting to 0");
-          }
-          else
-          {
-            giaFluxPtr->setUpdatedTime(header.m_real["giaUpdatedTime"]); 
-          } 
-          // try to read initial thickness above flotation
-          DisjointBoxLayout giaDBL = (giaFluxPtr->m_tafpadhat0)->disjointBoxLayout(); 
-          LevelData<FArrayBox> tafpadhat0;
-          tafpadhat0.define(giaDBL,1);
-    	  int dataStatus = read<FArrayBox>(a_handle,
-    					   tafpadhat0,
-    					   "thicknessAboveFlotation0",
-    				       giaDBL);
-    	  /// note that although this check appears to work, it makes a mess of a_handle and the next lot of data are not read...
-      	  if (dataStatus != 0)
-          {
-    	    MayDay::Warning("checkpoint file does not contain initial ice thickness above flotation -- initializing to zero"); 
-          }
-          else
-          {
-            giaFluxPtr->setTAF0(tafpadhat0);
-          }
-          // try to read previous thickness above flotation
-          DisjointBoxLayout giaDBLold = (giaFluxPtr->m_tafpadhatold)->disjointBoxLayout(); 
-          LevelData<FArrayBox> tafpadhatold;
-          tafpadhat0.define(giaDBLold,1);
-    	  dataStatus = read<FArrayBox>(a_handle,
-    					   tafpadhatold,
-    					   "thicknessAboveFlotationOld",
-    				       giaDBLold);
-    	  /// note that although this check appears to work, it makes a mess of a_handle and the next lot of data are not read...
-      	  if (dataStatus != 0)
-          {
-    	    MayDay::Warning("checkpoint file does not contain initial ice thickness above flotation -- initializing to zero"); 
-          }
-          else
-          {
-            giaFluxPtr->setTAFold(tafpadhatold);
-          }   
-          // try to read fft uplift
-          LevelData<FArrayBox> upadhat;
-          giaDBL = (giaFluxPtr->m_upadhat)->disjointBoxLayout();
-          upadhat.define(giaDBL,1);
-    	  dataStatus = read<FArrayBox>(a_handle,
-    					   upadhat,
-    					   "upliftData",
-    				       giaDBL);
-    	  /// note that although this check appears to work, it makes a mess of a_handle and the next lot of data are not read...
-      	  if (dataStatus != 0)
-          {
-    	    MayDay::Warning("checkpoint file does not contain uplift data -- initializing to zero"); 
-          }
-          else
-          {
-            giaFluxPtr->setUn(upadhat);
-          }
 
-          // try to read initial thickness above flotation
-          LevelData<FArrayBox> udot;
-          giaDBL = (giaFluxPtr->m_udot)->disjointBoxLayout();
-          udot.define(giaDBL,1);
-    	  dataStatus = read<FArrayBox>(a_handle,
-    					   udot,
-    					   "udotData",
-    				       giaDBL);
-    	  /// note that although this check appears to work, it makes a mess of a_handle and the next lot of data are not read...
-      	  if (dataStatus != 0)
-          {
-    	    MayDay::Warning("checkpoint file does not contain uplift data -- initializing to zero"); 
-          }
-          else
-          {
-            giaFluxPtr->setUdot(udot);
-          }
-
-        } // end if we have a BuelerGIAFlux
-#endif // BUELERGIA	
-        // do any generic TopographyFlux sorts of things
-      } // end if there is a topographyFlux
 
 	} // end if this level is defined
     } // end loop over levels                                    
-  //
-
-
           
   // do we need to close the handle?
   
@@ -2258,8 +2089,6 @@ void AmrIce::writeMetaDataHDF5(HDF5Handle& a_handle) const
   headerData.m_string["svn_version"] = SVN_REV;
   headerData.m_string["svn_repository"] = SVN_REP;
   headerData.m_string["svn_url"] = SVN_URL;
-  headerData.m_string["git_hash"] = GIT_HASH;
-  headerData.m_string["git_remote"] = GIT_REMOTE;
   headerData.m_int["bisicles_version_major"] = BISICLES_VERSION_MAJOR;
   headerData.m_int["bisicles_version_minor"] = BISICLES_VERSION_MINOR;
   headerData.m_int["bisicles_patch_number"] = BISICLES_PATCH_NUMBER;
@@ -2352,13 +2181,8 @@ AmrIce::restart(const string& a_restart_file)
   readCheckpointFile(handle);
   handle.close();
   // don't think I need to do anything else, do I?
-  
-  //special case for inverse problems
-  InverseIceVelocitySolver* invPtr = dynamic_cast<InverseIceVelocitySolver*>(m_velSolver);
-  if (invPtr)
-    {
-      invPtr->setPreviousTime(m_time);
-    }
+
+
 }
 
 
@@ -2879,7 +2703,7 @@ void AmrIce::initCFData()
 
 	   for (DataIterator dit=a_buf.dataIterator(); dit.ok(); ++dit)
 	     {
-	       //a_buf[dit].copy((*m_calvedIceArea[a_lev])[dit]);
+	       a_buf[dit].copy((*m_volumeThicknessSource[a_lev])[dit]);
 	       a_buf[dit].plus((*m_calvedIceThickness[a_lev])[dit]);
 	       a_buf[dit] *= rhoi;
 	     }

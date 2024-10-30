@@ -240,32 +240,6 @@ c----------------------------------------------------------
       return
       end 
 
-      subroutine maxfab(CHF_FRA[u], 
-     &     CHF_CONST_FRA[v], CHF_BOX[box])
-      
-      integer CHF_AUTODECL[i],n
-      do n  = 0, CHF_NCOMP[u]-1
-         CHF_AUTOMULTIDO[box; i]
-         u(CHF_AUTOIX[i],n) = max(u(CHF_AUTOIX[i],n),v(CHF_AUTOIX[i],n))
-         CHF_ENDDO
-      end do
-      return
-      end
-      
-      subroutine minfab(CHF_FRA[u], 
-     &     CHF_CONST_FRA[v], CHF_BOX[box])
-      
-      integer CHF_AUTODECL[i],n
-      do n  = 0, CHF_NCOMP[u]-1
-         CHF_AUTOMULTIDO[box; i]
-         u(CHF_AUTOIX[i],n) = min(u(CHF_AUTOIX[i],n),v(CHF_AUTOIX[i],n))
-         CHF_ENDDO
-      end do
-      return
-      end
-
-      
-
 c------------------------------------------------------------
 c flag cells ok == 1 where alpha > tol or either face mu > tol
 c-----------------------------------------------------------

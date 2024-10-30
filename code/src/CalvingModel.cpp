@@ -14,7 +14,13 @@
 #include "IceConstants.H"
 #include "AmrIce.H"
 #include "ParmParse.H"
+#include <fstream>
+#include "computeSum.H"
+#include "computeNorm.H"
+#include "AMRPoissonOpF_F.H"
 #include "NamespaceHeader.H"
+#include <limits>
+#include <time.h>
 
 /// a default implementation
 /**
@@ -385,10 +391,8 @@ CalvingModel* CalvingModel::parseCalvingModel(const char* a_prefix)
       pp.query("start_time",  startTime);
       Real endTime = 1.2345678e+300;
       pp.query("end_time",  endTime);
-      bool factorMuCoef = false;
-      pp.query("factor_mu_coef",factorMuCoef); 
       ptr = new ThicknessCalvingModel
-	(calvingThickness,  calvingDepth, minThickness, startTime, endTime, factorMuCoef); 
+	(calvingThickness,  calvingDepth, minThickness, startTime, endTime); 
     }
   else if (type == "CliffCollapseCalvingModel")
     {  
@@ -560,13 +564,6 @@ ThicknessCalvingModel::applyCriterion
       FArrayBox& removed = a_removedIce[dit];
       FArrayBox effectiveThickness(thck.box(), 1);
       effectiveThickness.copy(thck);
-
-      if (m_factorMuCoef)
-	{
-	  effectiveThickness *= a_amrIce.muCoef(a_level)[dit];
-	}
-
-      
       Box b = thck.box();
       b &= iceFrac.box();
       
@@ -701,24 +698,6 @@ CompositeCalvingModel::applyCriterion(LevelData<FArrayBox>& a_thickness,
     }
 }
 
-//alter the thickness field at the end of a time step
-void 
-CompositeCalvingModel::getCalvingRate(LevelData<FArrayBox>& a_rate, 
-				      const AmrIce& a_amrIce,int a_level)
-{
-
-  m_vectModels[0]->getCalvingRate(a_rate, a_amrIce, a_level);
-  LevelData<FArrayBox> tmp(a_rate.disjointBoxLayout(),1,a_rate.ghostVect());
-  for (int n = 1; n < m_vectModels.size(); n++)
-    {
-      m_vectModels[n]->getCalvingRate(tmp, a_amrIce, a_level);
-      for (DataIterator dit(a_rate.disjointBoxLayout()); dit.ok(); ++dit)
-	{
-	  a_rate[dit] += tmp[dit];
-	}
-    }
-}
-
   
 CompositeCalvingModel::~CompositeCalvingModel()
 {
@@ -837,17 +816,12 @@ void VariableRateCalvingModel::applyCriterion
       FArrayBox& removed = a_removedIce[dit];
       FArrayBox& frac = a_iceFrac[dit];
       const BaseFab<int>& mask = levelCoords.getFloatingMask()[dit];
-      Real frac_eps = TINY_FRAC;
+      Real frac_eps = 1.0e-6;
       const Box& b = levelCoords.grids()[dit];
       for (BoxIterator bit(b); bit.ok(); ++bit)
 	{
 	  const IntVect& iv = bit();
 	  Real prevThck = thck(iv);
-
-	  if (frac(iv) < frac_eps * frac_eps)
-	    {
-	      frac(iv) = 0.0;
-	    }
 	  
 	  if (frac(iv) < frac_eps)
 	    {
@@ -1021,13 +995,67 @@ RateProportionalToSpeedCalvingModel::RateProportionalToSpeedCalvingModel(ParmPar
 
       std::string prefix (a_pp.prefix());
       m_proportion = SurfaceFlux::parse( (prefix + ".proportion").c_str());
-      if (!m_proportion) m_proportion = new zeroFlux(); 
-      m_independent = SurfaceFlux::parse( (prefix + ".independent").c_str());
-      if (!m_independent) m_independent  = new zeroFlux(); 
-      m_vector = false;
-      a_pp.query("vector", m_vector);
 
-      
+      m_normalize_vel_to_flowline_terminus_vel = false;
+      a_pp.query("normalize_vel_to_flowline_terminus_vel", m_normalize_vel_to_flowline_terminus_vel);
+      if (m_normalize_vel_to_flowline_terminus_vel)
+	{
+	  m_flowline_terminus_speed_update_interval = 0.25;
+	  m_time_last = -1.0;
+	  m_level_last = -2;
+	  a_pp.query("flowline_terminus_speed_update_interval", m_flowline_terminus_speed_update_interval);
+	  m_flowline_terminus_speed_last_update = -1.2345678e+300;
+	  m_max_flowline_terminus_speed = 2.0e+4;
+	  m_min_flowline_terminus_speed = 5.0e+3;
+	  m_uT = 0.0;
+	  a_pp.query("max_flowline_terminus_speed",m_max_flowline_terminus_speed);
+	  a_pp.query("min_flowline_terminus_speed",m_min_flowline_terminus_speed);
+      m_measure_along_flowline = false;
+      a_pp.query("measure_along_flowline", m_measure_along_flowline);
+	  m_update_every_timestep = false;	  
+      a_pp.query("update_every_timestep", m_update_every_timestep);
+	  
+	  //need to read a space separated file of flowline co-ordinates
+	  // format needs to be x\sy\n
+	  std::string file_name;
+	  a_pp.get("flowline_file",file_name);
+	  std::ifstream infile(file_name);
+	  Real x,y;
+	  while (infile >> x >> y)
+	    {
+	      flowline_xy.push_back(std::make_pair(x,y));
+	    }
+	  
+      // MJT - new module to calculate required calving rate to hit a prescribed cfl
+      m_prescribe_cfl = true;	  
+      a_pp.query("prescribe_cfl", m_prescribe_cfl);
+	  if (m_prescribe_cfl) {
+	    // Get the file containing cfl times and positions
+	    std::string cfl_file;
+	    a_pp.get("cfl_file",cfl_file);
+	    std::ifstream cflfile(cfl_file);
+	    Real t,cfl;
+    	while (cflfile >> t >> cfl)
+	      {
+	        calvingFront_time_locn.push_back(std::make_pair(t,cfl));
+	      }	    
+	  }
+	  
+      // MJT - use a prescribed calving rate
+      m_prescribe_calving_rate = false;	  
+      a_pp.query("prescribe_calving_rate", m_prescribe_calving_rate);
+	  if (m_prescribe_calving_rate) {
+	    // Get the file containing cfl times and positions
+	    std::string calving_rate_file;
+	    a_pp.get("calving_rate_file",calving_rate_file);
+	    std::ifstream ratefile(calving_rate_file);
+	    Real t,rate;
+    	while (ratefile >> t >> rate)
+	      {
+	        calvingRate_time_rate.push_back(std::make_pair(t,rate));
+	      }	    
+	  }
+	}
 }
 
 void RateProportionalToSpeedCalvingModel::applyCriterion
@@ -1052,30 +1080,19 @@ void RateProportionalToSpeedCalvingModel::applyCriterion
       FArrayBox& removed = a_removedIce[dit];
       FArrayBox& frac = a_iceFrac[dit];
       const BaseFab<int>& mask = levelCoords.getFloatingMask()[dit];
-      Real frac_eps = TINY_FRAC;
+      Real frac_eps = 1.0e-6;
       const Box& b = levelCoords.grids()[dit];
       for (BoxIterator bit(b); bit.ok(); ++bit)
 	{
 	  const IntVect& iv = bit();
 	  Real prevThck = thck(iv);
-
-	  // if (frac(iv) < frac_eps * frac_eps)
-	  //   {
-	  //     frac(iv) = 0.0;
-	  //   }
 	  
-	  // if (frac(iv) < frac_eps)
-	  //   {
-	  //     thck(iv) = 0.0;
-	  //   }
+	  if (frac(iv) < frac_eps)
+	    {
+	      thck(iv)=0.0;
+	    }
 
-	  //  // if (frac(iv) < 0.5)
-	  //  //   {
-	  //  //     thck(iv) *= frac(iv);
-	  //  //   }
-
-		  
-	  // // Record gain/loss of ice
+	  // Record gain/loss of ice
 	  if (calved.box().contains(iv))
 	    {
 	      updateCalvedIce(thck(iv),prevThck,mask(iv),added(iv),calved(iv),removed(iv));
@@ -1083,6 +1100,45 @@ void RateProportionalToSpeedCalvingModel::applyCriterion
 
 	}
     }
+	
+  a_thickness.exchange();
+  a_iceFrac.exchange();
+
+  /*if (a_stage == CalvingModel::PostVelocitySolve)
+    {
+      // now seems like a good time to update the terminus velocity
+      if (m_normalize_vel_to_flowline_terminus_vel)
+	{
+	  const Real& t = a_amrIce.time();
+	  if (m_update_every_timestep)
+	    {
+		  m_flowline_terminus_speed_update_interval = a_amrIce.dt();
+		}  
+	  if ( ( t - m_flowline_terminus_speed_last_update) >= m_flowline_terminus_speed_update_interval )
+	    {
+	      m_flowline_terminus_speed_last_update = t;
+		  if (m_prescribe_cfl)
+		    {
+			  //pair<Real,Real> alongFlowTerminusSpeed_output =  alongFlowTerminusSpeed(a_amrIce);
+			  //m_flowline_terminus_speed = alongFlowTerminusSpeed_output.first;
+			  //m_flowline_terminus_distance = alongFlowTerminusSpeed_output.second;		
+			}
+		else
+	  	  {
+		    if (m_measure_along_flowline)
+		      {
+	            //pair<Real,Real> alongFlowTerminusSpeed_output =  alongFlowTerminusSpeed(a_amrIce);
+			    //m_flowline_terminus_speed = alongFlowTerminusSpeed_output.first;
+			    //m_flowline_terminus_distance = alongFlowTerminusSpeed_output.second;
+	  		  }
+		    else
+		      {
+	            //m_flowline_terminus_speed = flowlineTerminusSpeed(a_amrIce);
+			  }
+		  }
+	    }
+	}
+    }*/
 }
 
 
@@ -1093,7 +1149,6 @@ CalvingModel* RateProportionalToSpeedCalvingModel::new_CalvingModel()
     ptr->m_startTime = m_startTime;
     ptr->m_endTime = m_endTime;
     ptr->m_proportion = m_proportion->new_surfaceFlux();
-    ptr->m_independent = m_independent->new_surfaceFlux();
     ptr->m_domainEdgeCalvingModel = new DomainEdgeCalvingModel(*m_domainEdgeCalvingModel);
     return ptr; 
   }
@@ -1113,151 +1168,507 @@ RateProportionalToSpeedCalvingModel::~RateProportionalToSpeedCalvingModel()
       m_proportion = NULL;
     }
 
-    if (m_independent != NULL)
-    {
-      delete m_independent;
-      m_independent = NULL;
-    }
-
-  
 }
 
-bool 
-RateProportionalToSpeedCalvingModel::getCalvingVel
-(LevelData<FluxBox>& a_faceCalvingVel,
- const LevelData<FluxBox>& a_faceIceVel,
- const LevelData<FArrayBox>& a_centreIceVel,
- const DisjointBoxLayout& a_grids,
- const AmrIce& a_amrIce,int a_level)
+
+
+Real
+RateProportionalToSpeedCalvingModel::flowlineTerminusSpeed(const AmrIce& a_amrIce)
 {
-  if (!m_vector) return false;
+
+  /// we want to find the speed at the point where the flowline intersects the calving front.
+  /// MJT did this in a python function
+  /// by stepping through the flowline points and choosing the velocity
+  /// from the first point where h > 1.0e-2
+
+  /// However, this is quite fiddly in AMR / parallel so 
+  ///  SLC has decided to compute 
+  /// v_front = integral ( v * mesh_dirac_delta (x-xf,y-yf) , dx*dy)
+  /// mesh_dirac_delta(x,y) is the (normalised) W(x,y)*|laplacian(ice_frac)*dx * h|^2
+
+  /// The obvious prescription for W(x,y) is to set
+  /// W(x,y) = 1 where the cell centred on x,y contains a flowline point.
+  /// this method might break down if the flowline points are sparser than the mesh
+  /// More robust (but slower) is to set W(x,y) = exp ( - |(x-x_f, y-y_f)|^2 / scale^2 )
+  /// and normalize
   
-  // cell-centered proportion
-  LevelData<FArrayBox> prop(a_grids, 1, 2*IntVect::Unit);
-  m_proportion->evaluate(prop, a_amrIce, a_level, a_amrIce.dt());
-  prop.exchange();
-  //interpolate to faces
- 
-  //CellToEdge(prop, a_faceCalvingVel);
-  LevelData<FluxBox>& faceProp = a_faceCalvingVel;
-  for (DataIterator dit(a_grids); dit.ok(); ++dit)
-    {
-      const FArrayBox& frac = (*a_amrIce.iceFraction(a_level))[dit];
-      for (int dir = 0; dir < SpaceDim; dir++)
-  	{
-  	  Box faceBox = frac.box();
-  	  faceBox.grow(-1);
-  	  faceBox.surroundingNodes(dir);
-  	  faceBox &= faceProp[dit][dir].box();
+  /// MJT - I've updated this so that the weight function W(x,y) is based on distance
+  /// to the nearest line segment, not distance to the nearest point.
 
-  	  for (BoxIterator bit(faceBox); bit.ok(); ++bit)
-  	    {
-  	      const IntVect& iv = bit();
-  	      // cell-centre indices on the - and + sides of the face
-  	      IntVect ivm = iv - BASISV(dir); 
-  	      IntVect ivp = iv;
-	      // one-sided...
-  	      if ( (frac(ivm) > TINY_FRAC) && (frac(ivp) <= TINY_FRAC) )
-  		{
-  		  faceProp[dit][dir](iv) = prop[dit](ivm);
-  		}
-  	      else if ( (frac(ivm) <= TINY_FRAC) && (frac(ivp) > TINY_FRAC) )
-  		{
-  		  faceProp[dit][dir](iv) = prop[dit](ivp);
-  		}
-  	      else
-  		{
-  		  // normal linear interpolation
-  		  faceProp[dit][dir](iv) = 0.5 * (prop[dit](ivm) + prop[dit](ivp));
-  		}
-  	    }
-  	}
-    }
-    
+  CH_TIME("RateProportionalToSpeedCalvingModel::flowlineTerminusSpeed");
+  
+  Real scale = 1.0e+2;
+  //Real scale = a_amrIce.dx(0)[0];
+  Real max_speed = 0.0;
+  Vector<LevelData<FArrayBox>* > mesh_dirac_delta;
+  Vector<LevelData<FArrayBox>* > speed_weighted;
+  double inf = std::numeric_limits<double>::infinity();
+  double max = std::numeric_limits<double>::max();
 
-  // multiply by -velocity
-  for (DataIterator dit(a_grids); dit.ok(); ++dit)
+  //compute mesh_dirac_delta. Will need to normalize later
+  //compute speed at the same time
+  for (int lev = 0; lev <= a_amrIce.finestLevel(); lev++)
     {
-      for (int dir = 0; dir < SpaceDim; dir++)
+      mesh_dirac_delta.push_back(new LevelData<FArrayBox>( a_amrIce.grids(lev), 1, IntVect::Zero));
+      speed_weighted.push_back(new LevelData<FArrayBox>( a_amrIce.grids(lev), 1, IntVect::Zero));
+      
+      const RealVect& dx = a_amrIce.dx(lev);
+      for (DataIterator dit( a_amrIce.grids(lev) ); dit.ok(); ++dit)
 	{
-	  a_faceCalvingVel[dit][dir] *= -1.0;
-	  a_faceCalvingVel[dit][dir] *= a_faceIceVel[dit][dir];
-	}
-    }
+	  const FArrayBox& f = (*a_amrIce.iceFrac(lev))[dit];
+	  const FArrayBox& h = (*a_amrIce.geometry(lev)).getH()[dit];
+	  const Box& box = a_amrIce.grids(lev)[dit];
 
-  if (m_independent)
-    {
-      // cell-centered independent part 
-      LevelData<FArrayBox> ccrate(a_grids, 1, 2*IntVect::Unit);
-     
-      m_independent->evaluate(ccrate, a_amrIce, a_level, a_amrIce.dt());
-      ccrate.exchange();
-      LevelData<FArrayBox> ccvel(a_grids, SpaceDim, 2*IntVect::Unit);
-     
-      for (DataIterator dit(a_grids); dit.ok(); ++dit)
-	{
-	  const FArrayBox& vel = a_centreIceVel[dit];
-	  ccvel[dit].setVal(0.0);//for the ghost cells outside the domain
-	  Box gbox = a_grids[dit];
-	  gbox.grow(1);
-	  for (BoxIterator bit(a_grids[dit]); bit.ok(); ++bit)
+	  // laplacian(ice_frac) (undivided, absolute)
+	  FArrayBox lap_f(box,1);
+	  lap_f.setVal(0.0);
+	  Real alpha = 0;
+      Real beta = 1.0;
+	  Real bogusDx = 1.0;
+	  FORT_OPERATORLAP(CHF_FRA(lap_f),
+                           CHF_FRA(f),
+                           CHF_BOX(box),
+                           CHF_CONST_REAL(bogusDx),
+                           CHF_CONST_REAL(alpha),
+                           CHF_CONST_REAL(beta));
+	  
+	  lap_f *= lap_f; // keep it positive
+	  lap_f *= h; // don't want any values of h from zero thickness cells.
+	    
+	  // W(x,y) 
+	  FArrayBox flowlineweight(box,1);
+	  flowlineweight.setVal(0.0);
+	  Real sumflowlineweight = 0.0;
+	  Real sumlapf = 0.0;
+	  for ( BoxIterator bit(box); bit.ok(); ++bit)
 	    {
 	      const IntVect& iv = bit();
-	      Real norm = std::sqrt(vel(iv,0)*vel(iv,0) + vel(iv,1)*vel(iv,1));
-	      //if (norm > 1.0e-10)
+	    /*  for (int k = 0; k < flowline_xy.size(); k++)
 		{
-		  ccvel[dit](iv,0) = - ccrate[dit](iv)*vel(iv,0) / (norm + TINY_NORM);
-		  ccvel[dit](iv,1) = - ccrate[dit](iv)*vel(iv,1) / (norm + TINY_NORM);
+		  Real xiv = ( Real(iv[0]) + 0.5 )*dx[0];
+		  Real yiv = ( Real(iv[1]) + 0.5 )*dx[1];
+		  Real rx = (xiv - flowline_xy[k].first)/scale;
+		  Real ry = (yiv - flowline_xy[k].second)/scale;
+		  Real rsq = rx*rx + ry*ry;
+		  flowlineweight(iv) += std::exp(-rsq);
+		  sumflowlineweight += flowlineweight(iv);
+		  if (lap_f(iv) > max)
+		    { lap_f(iv) = 1.0; }
+		  sumlapf += lap_f(iv);
+		}*/
+		
+	      for (int k = 0; k < flowline_xy.size() - 1; k++)
+		{
+		  Real xiv = ( Real(iv[0]) + 0.5 )*dx[0];
+		  Real yiv = ( Real(iv[1]) + 0.5 )*dx[1];
+		  Real x0 = flowline_xy[k].first;
+		  Real x1 = flowline_xy[k].first;
+		  Real y0 = flowline_xy[k+1].second;
+		  Real y1 = flowline_xy[k+1].second;
+		  Real px = x1 - x0;
+		  Real py = y1 - y0;
+		  Real norm = px*px + py*py;
+		  Real ua = ((xiv - x0) * px + (yiv - y0) * py) / norm;
+		  ua = std::max(0.0,std::min(1.0,ua));
+		  Real xl = x0 + ua*px;
+		  Real yl = y0 + ua*py;
+		  Real dist = std::sqrt((xiv-xl)*(xiv-xl) + (yiv-yl)*(yiv-yl)); 
+		  flowlineweight(iv) = std::max(flowlineweight(iv),std::exp(-(dist*dist)/(scale*scale)));
+		  if (lap_f(iv) > max) { 
+		  lap_f(iv) = 1.0; 
+		  pout() << "RateProportionalToSpeedCalvingModel::Infinity found" << std::endl;
+		  }
+		  sumlapf += lap_f(iv);
 		}
 	    }
-	}
-      // interpolate to centers and add to a_faceCalvingVel
 
-      ccvel.exchange();
-      LevelData<FluxBox> flux(a_grids, 1, IntVect::Unit);
-      CellToEdge(ccvel, flux);
-      
-      for (DataIterator dit(a_grids); dit.ok(); ++dit)
-	{
-	  for (int dir = 0; dir < SpaceDim; dir++)
-	    {	      
-	      a_faceCalvingVel[dit][dir] += flux[dit][dir];
+	  // compute mesh_dirac_delta. Will need to normalize later.
+	  (*mesh_dirac_delta[lev])[dit].copy(flowlineweight);
+	  (*mesh_dirac_delta[lev])[dit] *= lap_f;
+	  
+      //pout() << "RateProportionalToSpeedCalvingModel::sumflowlineweight = " << sumflowlineweight << ", sumlapf = " << sumlapf << std::endl;
+
+	  /// compute speed everywhere.
+	  FArrayBox& uu = (*speed_weighted[lev])[dit];
+	  uu.setVal(0.0);
+	  const FArrayBox& u = (*a_amrIce.velocity(lev))[dit];
+	  for ( BoxIterator bit(box); bit.ok(); ++bit)
+	    {
+	      const IntVect& iv = bit();
+	      Real t = 0.0;
+	      for (int dir = 0; dir < SpaceDim; dir++)
+		{
+		  t += u(iv,dir)*u(iv,dir);
+		}
+	      
+	      uu(iv) = std::sqrt(t);
 	    }
+	  uu *=  (*mesh_dirac_delta[lev])[dit];
 	}
     }
-
-  return true;
   
+  Real denom = computeSum(mesh_dirac_delta,  a_amrIce.refRatios(), a_amrIce.dx(0)[0],  Interval(0,0), 0);
+  Real num = computeSum(speed_weighted,  a_amrIce.refRatios(), a_amrIce.dx(0)[0],  Interval(0,0), 0);
+  Real result = std::min(num/denom, m_max_flowline_terminus_speed);
+  //pout() << "RateProportionalToSpeedCalvingModel::flowlineTerminusSpeed = " << result << std::endl;
+  //clean up
+  for (int lev = 0; lev <= a_amrIce.finestLevel(); lev++)
+    {
+      delete ( mesh_dirac_delta[lev] );  mesh_dirac_delta[lev] = NULL;
+      delete ( speed_weighted[lev] );  speed_weighted[lev] = NULL;
+    }
+
+  return result;
+}
+
+std::pair<Real, Real>
+RateProportionalToSpeedCalvingModel::alongFlowTerminusSpeed(const AmrIce& a_amrIce)
+{
+
+  /// CalvingModel.measure_along_flowline = true
+  /// This essentially does the same as flowlineTerminusSpeed, but measures along the flowline
+  /// like MJT's original Python function.
+  
+  /// For each flowline point, create a function that's 0 everywhere and 1 for the cell 
+  /// containing the point. Then multiply by the ice fraction until we find the first cell
+  /// containing ice.
+  
+  /// Update (27/11/2020) - Also return the distance of the cfl along the flowline
+
+  CH_TIME("RateProportionalToSpeedCalvingModel::alongFlowTerminusSpeed");
+  
+  Real result = 1.0;  
+  
+  Real distanceAlongFlow = 0.0;
+  
+  for (int k = 0; k < flowline_xy.size(); k++)
+    {  
+	
+	  // Calculate the along flowline distance
+	  if (k > 0) {
+	    Real delx = flowline_xy[k].first - flowline_xy[k-1].first;
+	    Real dely = flowline_xy[k].second - flowline_xy[k-1].second;
+		distanceAlongFlow += std::sqrt(delx*delx + dely*dely);
+	  }
+  
+      //Real scale = 1.0e+2;
+      Vector<LevelData<FArrayBox>* > mesh_dirac_delta;
+      Vector<LevelData<FArrayBox>* > speed_weighted;
+      Vector<LevelData<FArrayBox>* > mesh_frac;
+
+      //compute mesh_dirac_delta. Will need to normalize later
+      //compute speed at the same time
+      for (int lev = 0; lev <= a_amrIce.finestLevel(); lev++)
+        {
+          mesh_dirac_delta.push_back(new LevelData<FArrayBox>( a_amrIce.grids(lev), 1, IntVect::Zero));
+          speed_weighted.push_back(new LevelData<FArrayBox>( a_amrIce.grids(lev), 1, IntVect::Zero));
+          mesh_frac.push_back(new LevelData<FArrayBox>( a_amrIce.grids(lev), 1, IntVect::Zero));
+      
+          const RealVect& dx = a_amrIce.dx(lev);
+		  
+	      (*mesh_dirac_delta[lev]).exchange();
+	      (*mesh_frac[lev]).exchange();
+	      (*speed_weighted[lev]).exchange();		  
+		  
+          for (DataIterator dit( a_amrIce.grids(lev) ); dit.ok(); ++dit)
+        	{
+        	  const FArrayBox& f = (*a_amrIce.iceFrac(lev))[dit];
+        	  //const FArrayBox& h = (*a_amrIce.geometry(lev)).getH()[dit];
+        	  const Box& box = a_amrIce.grids(lev)[dit];
+	          FArrayBox ice_frac(box,1);
+	          ice_frac.setVal(0.0);
+	          ice_frac += f;
+
+        	  // W(x,y) 
+        	  FArrayBox flowlineweight(box,1);
+        	  flowlineweight.setVal(0.0);
+              Real scale = dx[0] / 0.01;
+        	  for ( BoxIterator bit(box); bit.ok(); ++bit)
+	            {
+        	      const IntVect& iv = bit();
+        		  Real xiv = ( Real(iv[0]) + 0.5 )*dx[0];
+		          Real yiv = ( Real(iv[1]) + 0.5 )*dx[1];
+		          Real rx = (xiv - flowline_xy[k].first)/scale;
+		          Real ry = (yiv - flowline_xy[k].second)/scale;
+		          Real rsq = rx*rx + ry*ry;
+		          flowlineweight(iv) += std::exp(-rsq);
+	            }
+
+	          // compute mesh_dirac_delta. Will need to normalize later.
+	          (*mesh_dirac_delta[lev])[dit].copy(flowlineweight);
+	          (*mesh_frac[lev])[dit].copy(ice_frac);
+	          (*mesh_frac[lev])[dit].copy(ice_frac);
+	        }
+	      (*mesh_dirac_delta[lev]).exchange();
+	      (*mesh_frac[lev]).exchange();
+	      (*speed_weighted[lev]).exchange();
+        } // end level loop
+	
+      // Set the weight function to be 1 for the max, 0 everywhere else
+      Real maxWeight = computeMax(mesh_dirac_delta, a_amrIce.refRatios(), Interval(0,0), 0);
+      for (int lev = 0; lev <= a_amrIce.finestLevel(); lev++)
+        {      
+          for (DataIterator dit( a_amrIce.grids(lev) ); dit.ok(); ++dit)
+	        {
+	          const Box& box = a_amrIce.grids(lev)[dit];
+	          for ( BoxIterator bit(box); bit.ok(); ++bit)
+	            {
+                  const IntVect& iv = bit();
+		          if ( (*mesh_dirac_delta[lev])[dit](iv) < maxWeight)
+		            {
+                      (*mesh_dirac_delta[lev])[dit](iv) = 0.0;
+		            }
+		          else
+		            {
+		              (*mesh_dirac_delta[lev])[dit](iv) = 1.0;
+		            }
+		        }
+	        }
+	      (*mesh_dirac_delta[lev]).exchange();
+	      (*mesh_frac[lev]).exchange();
+	      (*speed_weighted[lev]).exchange();
+	    }
+	
+      maxWeight = computeMax(mesh_dirac_delta, a_amrIce.refRatios(), Interval(0,0), 0);
+      Real sumWeight = computeSum(mesh_dirac_delta, a_amrIce.refRatios(), a_amrIce.dx(0)[0], Interval(0,0), 0);
+	  
+	  // Multiply the ice fraction by the weight function
+      for (int lev = 0; lev <= a_amrIce.finestLevel(); lev++)
+        {      
+	      for (DataIterator dit( a_amrIce.grids(lev) ); dit.ok(); ++dit)
+	        {
+	          FArrayBox& mf = (*mesh_frac[lev])[dit];
+	          const FArrayBox& f = (*a_amrIce.iceFrac(lev))[dit];
+	          mf.setVal(0.0);
+	          mf += (*mesh_dirac_delta[lev])[dit];
+	          mf *= f;
+	        }
+	      (*mesh_dirac_delta[lev]).exchange();
+	      (*mesh_frac[lev]).exchange();
+	      (*speed_weighted[lev]).exchange();
+	    }
+	  // Calculate the sum of ice_frac(x,y)*w(x,y)
+      Real sumMeshFrac = computeSum(mesh_frac,  a_amrIce.refRatios(), a_amrIce.dx(0)[0],  Interval(0,0), 0);
+	  
+	  // Break out of the flowline loop the first time the sum > 0, after calculating the velocity
+      //pout() << "RateProportionalToSpeedCalvingModel::flowlineIteration = " << k << ", distanceAlongFlow = " << distanceAlongFlow << ", sumWeight = " << sumWeight << ", sumMeshFrac = " << sumMeshFrac << ", alongFlowTerminusSpeed = " << result << std::endl;	
+	  if ((sumMeshFrac/sumWeight) > 1.0e-3)
+	    {
+          for (int lev = 0; lev <= a_amrIce.finestLevel(); lev++)
+            {      
+              for (DataIterator dit( a_amrIce.grids(lev) ); dit.ok(); ++dit)
+	            {
+	              // compute speed everywhere.
+            	  FArrayBox& uu = (*speed_weighted[lev])[dit];
+            	  uu.setVal(0.0);
+	              const FArrayBox& u = (*a_amrIce.velocity(lev))[dit];
+	              const Box& box = a_amrIce.grids(lev)[dit];
+	              for ( BoxIterator bit(box); bit.ok(); ++bit)
+	                {
+	                  const IntVect& iv = bit();
+	                  Real t = 0.0;
+	                  for (int dir = 0; dir < SpaceDim; dir++)
+		                {
+		                  t += u(iv,dir)*u(iv,dir);
+		                }
+	      
+            	      uu(iv) = std::sqrt(t);
+	                }
+	              uu *=  (*mesh_dirac_delta[lev])[dit];
+	            }
+	      (*mesh_dirac_delta[lev]).exchange();
+	      (*mesh_frac[lev]).exchange();
+	      (*speed_weighted[lev]).exchange();
+	        }
+          Real denom = computeSum(mesh_dirac_delta,  a_amrIce.refRatios(), a_amrIce.dx(0)[0],  Interval(0,0), 0);
+          Real num = computeSum(speed_weighted,  a_amrIce.refRatios(), a_amrIce.dx(0)[0],  Interval(0,0), 0);
+          result = std::min(num/denom, m_max_flowline_terminus_speed);
+	      distanceAlongFlow += (1.0-(sumMeshFrac/sumWeight)) * a_amrIce.dx(a_amrIce.finestLevel())[0];
+          pout() << "RateProportionalToSpeedCalvingModel::flowlineIteration = " << k << ", sumWeight = " << sumWeight << ", sumMeshFrac = " << sumMeshFrac << ", alongFlowTerminusSpeed = " << result << std::endl;	
+	      pout() << "RateProportionalToSpeedCalvingModel::alongFlowTerminusSpeed: flowlineIteration = " << k << ", distanceAlongFlow = " << distanceAlongFlow << std::endl;	
+          //clean up
+          for (int lev = 0; lev <= a_amrIce.finestLevel(); lev++)
+            {
+	      (*mesh_dirac_delta[lev]).exchange();
+	      (*mesh_frac[lev]).exchange();
+	      (*speed_weighted[lev]).exchange();
+              delete ( mesh_dirac_delta[lev] );  mesh_dirac_delta[lev] = NULL;
+              delete ( speed_weighted[lev] );  speed_weighted[lev] = NULL;
+              delete ( mesh_frac[lev] );  mesh_frac[lev] = NULL;
+            }		  
+		  break;
+		}
+
+      //clean up
+      for (int lev = 0; lev <= a_amrIce.finestLevel(); lev++)
+        {
+          delete ( mesh_dirac_delta[lev] );  mesh_dirac_delta[lev] = NULL;
+          delete ( speed_weighted[lev] );  speed_weighted[lev] = NULL;
+          delete ( mesh_frac[lev] );  mesh_frac[lev] = NULL;
+        }
+    } // End of the flowline loop
+
+  /*struct return_values {
+    Real terminus_vel, terminus_distance;
+  };
+  return return_values {result,distanceAlongFlow};*/
+  std::pair <Real,Real> return_values (result,distanceAlongFlow);
+  //return result;
+  return return_values;
 }
 
 void
 RateProportionalToSpeedCalvingModel::getCalvingRate
 (LevelData<FArrayBox>& a_calvingRate, const AmrIce& a_amrIce,int a_level)
 {
-  // CH_assert(false); // we don't want to use this
-  m_proportion->evaluate(a_calvingRate, a_amrIce, a_level, a_amrIce.dt());
-  LevelData<FArrayBox> indep(a_calvingRate.disjointBoxLayout(), 1, 2*IntVect::Unit);
-  if (m_independent) m_independent->evaluate(indep, a_amrIce, a_level, a_amrIce.dt());
-  const LevelData<FArrayBox>& vel = *a_amrIce.velocity(a_level); // flux vel might be better  
+  //srand((unsigned) time(NULL));
+  m_proportion->evaluate(a_calvingRate, a_amrIce, a_level, 0.0);
+
+  // Calculate the factor
+  Real factor = 1.0;
+  const Real& t = a_amrIce.time();
+  if (m_update_every_timestep)
+    {
+	  m_flowline_terminus_speed_update_interval = a_amrIce.dt();
+	}  
+  if ( ( t - m_flowline_terminus_speed_last_update) >= m_flowline_terminus_speed_update_interval )
+    {
+      m_flowline_terminus_speed_last_update = t;
+  if (m_time_last != a_amrIce.time()) {
+    m_time_last = a_amrIce.time();
+    //pout() << "RateProportionalToSpeedCalvingModel::flowlineTerminusSpeed = " << m_flowline_terminus_speed << ", flowlineTerminusDistance = " << m_flowline_terminus_distance << std::endl;
+    if (m_prescribe_cfl) {
+      pair<Real,Real> alongFlowTerminusSpeed_output =  alongFlowTerminusSpeed(a_amrIce);
+  	  m_flowline_terminus_speed = alongFlowTerminusSpeed_output.first;
+	  m_flowline_terminus_distance = alongFlowTerminusSpeed_output.second;		
+    }
+    else {
+	  if (m_measure_along_flowline) {
+	    pair<Real,Real> alongFlowTerminusSpeed_output =  alongFlowTerminusSpeed(a_amrIce);
+	    m_flowline_terminus_speed = alongFlowTerminusSpeed_output.first;
+	    m_flowline_terminus_distance = alongFlowTerminusSpeed_output.second;
+	  }
+	  else {
+	    m_flowline_terminus_speed = flowlineTerminusSpeed(a_amrIce);
+	  }
+    }
+    pout() << "RateProportionalToSpeedCalvingModel::time = " << a_amrIce.time() << ", flowlineTerminusSpeed = " << m_flowline_terminus_speed << ", flowlineTerminusDistance = " << m_flowline_terminus_distance << std::endl;
+  }
+  //m_velocity[a_level]->exchange(); // MJT
+  }
+  
+  if (m_prescribe_cfl) {
+  // uc(x,y) = u(x,y)/uT * [uT + (cfl' - cfl(t))/(t'-t)]
+  // cfl' and t' are the prescribed cfl and time
+  // uT is the terminus flowline speed
+  
+  // Get t, cfl(t), cfl' and t' and uT
+  Real t_now = a_amrIce.time();
+  Real cfl_now = m_flowline_terminus_distance;
+  Real t_next = 0.0;
+  Real cfl_next = 0.0;
+  Real uT = std::max(m_flowline_terminus_speed,1.0);
+  uT = m_flowline_terminus_speed;
+  
+  for (int k = 0; k < calvingFront_time_locn.size(); k++)
+    { 
+	  if (t_now < calvingFront_time_locn[k].first) {
+	    t_next = calvingFront_time_locn[k].first;
+	    cfl_next = calvingFront_time_locn[k].second;
+		break;
+	  }
+    }
+  Real uC = (cfl_next - cfl_now)/(t_next - t_now) + uT;
+  factor = uC / (uT + 1.0);
+  //if (uT <= 1.0) {factor = 1.0;}			// For the first timestep, otherwise we get massive initial rate
+  if (uT <= 1.0) 
+    {
+	  if (t_now == m_startTime) {factor = 1.0;}			// For the first timestep, otherwise we get massive initial rate
+	  else {											// Otherwise, the flowline terminus speed function has messed up. Set it to whatever was measured at the last timestep
+	    uT = m_uT;
+	    factor = uC / (uT + 1.0);
+	  }
+	}
+  if (factor <= 0.0) {factor = 0.0001;}		
+  pout() << "RateProportionalToSpeedCalvingModel::t=" << t_now << ", t'=" << t_next << ", cfl(t)=" << cfl_now << ", cfl'=" << cfl_next << ", u_T=" << uT << ", u_C=" << uC << ", factor=" << factor << std::endl;	
+  }
+  else {
+  if (m_normalize_vel_to_flowline_terminus_vel)
+    {
+      Real uT = m_flowline_terminus_speed;
+      //pout() << "RateProportionalToSpeedCalvingModel::getCalvingRate level = " << a_level << " v = " << v << std::endl;
+	  Real uC = 1.0;
+      Real t_now = a_amrIce.time();
+	  if (m_prescribe_calving_rate) {
+        Real t_last = 0.0;
+        Real t_next = 0.0;
+        Real rate_last = 0.0;
+        Real rate_next = 0.0;  
+        for (int k = 0; k < calvingRate_time_rate.size(); k++) {
+      	  if (t_now < calvingRate_time_rate[k].first) {
+            t_last = calvingRate_time_rate[k-1].first;
+            t_next = calvingRate_time_rate[k].first;
+      	    rate_last = calvingRate_time_rate[k-1].second;
+      	    rate_next = calvingRate_time_rate[k].second;
+        	break;
+          }
+        }
+		uC = rate_last + (rate_next-rate_last)*(t_now-t_last)/(t_next-t_last);
+		pout() << "RateProportionalToSpeedCalvingModel::t=" << t_now << ", t'=" << t_next << ", uC=" << uC << ", rate_next'=" << rate_next << ", u_T=" << uT << ", u_C=" << uC << ", factor=" << uC / (uT + 1.0) << std::endl;	
+ 	  
+	  }
+      factor = uC / (uT + 1.0);
+	  
+	  
+	  if (uT <= 1.0) 
+		{
+		  if (t_now == m_startTime) {factor = 1.0;}			// For the first timestep, otherwise we get massive initial rate
+		  else {											// Otherwise, the flowline terminus speed function has messed up. Set it to whatever was measured at the last timestep
+			uT = m_uT;
+			factor = uC / (uT + 1.0);
+		  }
+		}
+	  if (factor <= 0.0) {factor = 0.0001;}	
+	  
+    }
+  }
+  
+  m_uT = m_flowline_terminus_speed;
+  
+   // set uc(x,y) = u(x,y) and multiply by the factor
+  const LevelData<FArrayBox>& vel = *a_amrIce.velocity(a_level);
+  bool outputOnce = false;
+  //m_prescribe_cfl = true;	// Seems to be a memory leak here somewhere!
   for (DataIterator dit(vel.dataIterator()); dit.ok(); ++dit)
     {
       Box b = a_calvingRate[dit].box();
-      for (BoxIterator bit(b); bit.ok(); ++bit)
-	{
-	  const IntVect& iv = bit();
-	  Real usq = 0.0;
-	  for (int dir = 0; dir < SpaceDim; dir++)
-	    {
-	      usq += vel[dit](iv,dir)*vel[dit](iv,dir);
-	    }	
-	  a_calvingRate[dit](iv) *= std::sqrt(usq);
-	}
-      if  (m_independent)
-	{
-	  a_calvingRate[dit] += indep[dit];
-	}
+      for (BoxIterator bit(b); bit.ok(); ++bit) {
+        const IntVect& iv = bit();
+        Real usq = 0.0;
+        for (int dir = 0; dir < SpaceDim; dir++) {
+          usq += vel[dit](iv,dir)*vel[dit](iv,dir);
+        }
+        if (m_prescribe_cfl) {    
+          a_calvingRate[dit](iv) = factor * (1.0 + std::sqrt(usq));
+        }
+        else {
+          if (m_normalize_vel_to_flowline_terminus_vel) {
+            if (m_prescribe_calving_rate) {
+              a_calvingRate[dit](iv) = factor * (1.0 + std::sqrt(usq));
+            }
+            else {
+              a_calvingRate[dit](iv) *= factor * (1.0 + std::sqrt(usq));
+            }
+          }
+          else {
+            a_calvingRate[dit](iv) *= (0.001 + std::sqrt(usq));
+            //pout() << "RateProportionalToSpeedCalvingModel::time = " << a_amrIce.time() << ", uC = " << a_calvingRate[dit](iv) << ", u = " << std::sqrt(usq) << ", iv = " << iv << std::endl;
+          }
+        }
+      }
     }
-
+	//a_calvingRate.exchange();
+	
   int dbg = 0;dbg++; 
 }
 

@@ -148,11 +148,12 @@ c----------------------------------------------------
 
 c ----------------------------------------------------
 c sets beta^2 to zero if ice is floating
+c MJT - 2021/02/03: Don't set to zero, but rather multiply by a factor which defaults to zero
 c ----------------------------------------------------
       subroutine SETFLOATINGBETA(CHF_FRA1[beta],
-     &     CHF_CONST_FIA1[floatingMask],
-     &     CHF_REAL[ice_free_beta],
-     &     CHF_BOX[gridBox])
+     &                           CHF_REAL[multFactor],
+     &                           CHF_CONST_FIA1[floatingMask],
+     &                           CHF_BOX[gridBox])
 
       integer CHF_AUTODECL[i]
     
@@ -160,13 +161,14 @@ c     original behaviour
       CHF_AUTOMULTIDO[gridBox; i]
       if (floatingMask(CHF_AUTOIX[i]).eq.FLOATINGMASKVAL) then
 c     floating ice
-         beta(CHF_AUTOIX[i]) = zero
+c         beta(CHF_AUTOIX[i]) = zero // MJT
+         beta(CHF_AUTOIX[i]) = beta(CHF_AUTOIX[i])*multFactor 
       else if (floatingMask(CHF_AUTOIX[i]).eq.OPENSEAMASKVAL) then
-c     open sea : set beta >- ice_free_beta (and hope that rhs, mu = 0)
-         beta(CHF_AUTOIX[i]) = max(ice_free_beta,beta(CHF_AUTOIX[i]))
+c     open sea : set beta = 100.0 (and hope that rhs, mu = 0)
+         beta(CHF_AUTOIX[i]) = max(1.0d+2,beta(CHF_AUTOIX[i]))
       else if (floatingMask(CHF_AUTOIX[i]).eq.OPENLANDMASKVAL) then
 c     open land : set beta = 100.0 (and hope that rhs, mu = 0)
-         beta(CHF_AUTOIX[i]) = max(ice_free_beta,beta(CHF_AUTOIX[i]))
+         beta(CHF_AUTOIX[i]) = max(1.0d+2,beta(CHF_AUTOIX[i]))
       else
          beta(CHF_AUTOIX[i]) = max(1.0d-10,beta(CHF_AUTOIX[i]))
       end if
@@ -174,6 +176,102 @@ c     open land : set beta = 100.0 (and hope that rhs, mu = 0)
        
       return
       end
+	  
+	  
+c ----------------------------------------------------
+c MJT - 2021/05/11
+c smooths beta^2 for grounded ice towards zero when the thickness above flotation is below a certain fraction of the total thickness
+c ----------------------------------------------------
+      subroutine SMOOTHGROUNDEDBETA(CHF_FRA1[beta],
+     &                           CHF_FRA1[thkRatioAF],
+     &                           CHF_REAL[habLimit],
+     &                           CHF_CONST_FIA1[floatingMask],
+     &                           CHF_BOX[gridBox])
+
+      integer CHF_AUTODECL[i]
+    
+c     original behaviour
+      CHF_AUTOMULTIDO[gridBox; i]
+c     grounded ice
+      if ((floatingMask(CHF_AUTOIX[i]).eq.GROUNDEDMASKVAL)) then
+        if ((thkRatioAF(CHF_AUTOIX[i]).lt.habLimit)) then 
+          beta(CHF_AUTOIX[i]) = beta(CHF_AUTOIX[i])*(thkRatioAF(CHF_AUTOIX[i]) / habLimit)
+        end if
+      end if
+      CHF_ENDDO
+       
+      return
+      end
+
+c ----------------------------------------------------
+c switch to using one-sided gradients near grounding line
+c ----------------------------------------------------
+      subroutine CORNFORDCORRECTION(CHF_FRA1[grad],
+     &                              CHF_CONST_FRA1[Zsurf],
+     &                              CHF_CONST_FIA1[floatingMask],
+     &                              CHF_INT[dir],
+     &                              CHF_CONST_REAL[dx],
+     &                              CHF_BOX[gridBox])
+
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ii]
+      integer nstep
+      integer radius
+      REAL_T oneOnDx
+
+      oneOnDx = one/dx
+
+c  radius is how many cells away from grounding line we continue to use
+c  one-sided differencing. For the moment, use 1
+      radius = 1
+
+      CHF_DTERM[ii0 = CHF_ID(dir,0);
+                ii1 = CHF_ID(dir,1);
+                ii2 = CHF_ID(dir,2)]
+
+      CHF_AUTOMULTIDO[gridBox; i]
+        if (floatingMask(CHF_AUTOIX[i]).eq.FLOATINGMASKVAL) then
+c  ice is floating; check to see if adjacent ice in dir-direction 
+c  is _not_ floating 
+           if (floatingMask(CHF_OFFSETIX[i;+ii]).eq.GROUNDEDMASKVAL) then 
+c  land to the right, water to the left, use left difference
+c  for _this_ cell
+              do nstep=0, radius-1
+c clumsy way to avoid stepping out of bounds here
+                 if ((CHF_DTERM[(i0-nstep*ii0.ge.igradlo0);.AND.(i1-nstep*ii1.ge.igradlo1);.AND.(i2-nstep*ii2.ge.igradlo2)])) then
+                    grad(CHF_OFFSETIX[i;-nstep*ii]) = oneOnDx*(zSurf(CHF_OFFSETIX[i;-nstep*ii]) - zSurf(CHF_OFFSETIX[i;-(nstep+1)*ii]))
+              endif
+              enddo
+              
+              do nstep=1, radius
+c clumsy way to avoid stepping out of bounds here
+                 if ((CHF_DTERM[(i0+nstep*ii0.le.igradhi0);.AND.(i1+nstep*ii1.le.igradhi1);.AND.(i2+nstep*ii2.le.igradhi2)])) then
+                    grad(CHF_OFFSETIX[i;+nstep*ii]) = oneOnDx*(zSurf(CHF_OFFSETIX[i;+(nstep+1)*ii]) - zSurf(CHF_OFFSETIX[i;+(nstep)*ii]))
+                 endif
+              enddo
+           else if (floatingMask(CHF_OFFSETIX[i;-ii]).eq.GROUNDEDMASKVAL) then
+c     land to the left, water to the right, use right difference
+c     for _this_ cell
+              do nstep=1, radius
+c clumsy way to avoid stepping out of bounds here
+                 if ((CHF_DTERM[(i0-nstep*ii0.ge.igradlo0);.AND.(i1-nstep*ii1.ge.igradlo1);.AND.(i2-nstep*ii2.ge.igradlo2)])) then
+                    grad(CHF_OFFSETIX[i;-nstep*ii]) = oneOnDx*(zSurf(CHF_OFFSETIX[i;-nstep*ii]) - zSurf(CHF_OFFSETIX[i;-(nstep+1)*ii]))
+                 endif
+              enddo
+              
+              do nstep=0, radius-1
+c clumsy way to avoid stepping out of bounds here
+                 if ((CHF_DTERM[(i0+nstep*ii0.le.igradhi0);.AND.(i1+nstep*ii1.le.igradhi1);.AND.(i2+nstep*ii2.le.igradhi2)])) then
+                    grad(CHF_OFFSETIX[i;+nstep*ii]) = oneOnDx*(zSurf(CHF_OFFSETIX[i;+(nstep+1)*ii]) - zSurf(CHF_OFFSETIX[i;+(nstep)*ii]))
+                 endif
+              enddo
+              
+           endif
+        endif
+        CHF_ENDDO
+      return
+      end
+      
 
 c --------------------------------------------------
 c set surface elevation to topography on open land and to
@@ -485,6 +583,41 @@ c$$$     end if
       return
       end
       
+c$$$c------------------------------------------------------
+c$$$c compute the thickness diffusion coefficient D = rgH^2/C
+c$$$c at cell faces, given cell centred C and H
+c$$$c------------------------------------------------------
+c$$$
+c$$$      subroutine SETTHICKDIFF(CHF_FRA1[D],
+c$$$     &     CHF_CONST_FRA1[C],
+c$$$     &     CHF_CONST_FRA1[H],
+c$$$     &     CHF_CONST_REAL[rg],
+c$$$     &     CHF_CONST_INT[dir],
+c$$$     &     CHF_BOX[cellBox])
+c$$$
+c$$$      integer CHF_AUTODECL[i]
+c$$$      integer CHF_AUTODECL[ii]
+c$$$      Real oneOnD
+c$$$
+c$$$      CHF_DTERM[ii0 = CHF_ID(dir,0);
+c$$$                ii1 = CHF_ID(dir,1);
+c$$$                ii2 = CHF_ID(dir,2)]
+c$$$
+c$$$      CHF_AUTOMULTIDO[cellBox; i]
+c$$$
+c$$$      oneOnD = 0.5 * ( C(CHF_AUTOIX[i]) / H(CHF_AUTOIX[i])**2
+c$$$     &     + C (CHF_OFFSETIX[i;+ii]) / H (CHF_OFFSETIX[i;+ii])**2)
+c$$$
+c$$$      if ( C(CHF_AUTOIX[i]) .gt. zero 
+c$$$     &     .and.  C (CHF_OFFSETIX[i;+ii]) .gt. zero) then
+c$$$         D(CHF_OFFSETIX[i;+ii]) = rg / oneOnD
+c$$$      end if
+c$$$
+c$$$      CHF_ENDDO
+c$$$
+c$$$      return 
+c$$$      end 
+
 c------------------------------------------------------
 c compute the thickness diffusion coefficient D = rgH^2/C
 c at cell faces in grounded regions, given cell centred C and H
@@ -664,6 +797,2200 @@ c -----------------------------------------------------------
 
       return
       end 
+
+c -------------------------------------------------------------
+c compute "area advection" of real-valued ice mask
+c Basic idea is that in the absence of calving, etc, a calving front
+c will advance at the speed of the ice
+c 
+c  INPUTS/OUTPUTS:
+c     frac             <=> ice mask between 0 (no ice) and 1 (fully-covered)
+c     dhcalv           <= change in thickness due to calving 
+c     oldfrac          => initial ice mask between 0 (no ice) and 1 (fully-covered)
+c     faceIceVel       => face-centered advection velocity
+c     faceCalvVel      => face-centered calving rate      
+c     dx            => cell spacing
+c     dt            => timestep
+c     eps           => empty cells have frac < eps, full cell frac > 1 - eps
+c     box           => subregion over which to update mask
+c     idir          => component direction (do this one direction at a time)
+c -------------------------------------------------------------
+      subroutine ADVECTFRAC_SLC_SUBOPTIMAL(CHF_FRA1[frac],
+     &     CHF_FRA1[dh],
+     &     CHF_CONST_FRA1[oldfrac],
+     &     CHF_CONST_FRA1[faceIceVel],
+     &     CHF_CONST_FRA1[faceCalvVel],
+     &     CHF_CONST_FRA1[faceIceFlux],
+     &     CHF_CONST_FRA1[h],
+     &     CHF_REAL[dx],
+     &     CHF_REAL[dt],
+     &     CHF_REAL[eps],
+     &     CHF_BOX[box],
+     &     CHF_INT[idir])
+      
+
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ioff]
+      REAL_T factor, speed, onemeps, uim, ucm, uip, ucp, uc, tmp,fm,f,fp
+
+      onemeps = 1.0d0 - eps
+c  this assumes 2d and dx == dy
+      factor = dt/dx
+
+      CHF_DTERM[
+      ioff0 = CHF_ID(0,idir);
+      ioff1 = CHF_ID(1,idir);
+      ioff2 = CHF_ID(2,idir)]
+      
+      CHF_AUTOMULTIDO[box; i]
+      speed = zero
+      
+c     lower side
+!     ice vel at low face
+      uim = faceIceVel(CHF_AUTOIX[i])
+!     void vel at low face
+      ucm = faceCalvVel(CHF_AUTOIX[i])
+c     upper side
+!     ice vel at hi face
+      uip = faceIceVel(CHF_OFFSETIX[i;+ioff])
+!     void vel at hi face
+      ucp = faceCalvVel(CHF_OFFSETIX[i;+ioff])
+
+      
+      fm = oldfrac(CHF_OFFSETIX[i;-ioff])
+      fp = oldfrac(CHF_OFFSETIX[i;+ioff])
+      f = oldfrac(CHF_AUTOIX[i]) + 1.0d-10
+
+!     this bit is just the usual advection, but the void velocity is
+!     only valid at fronts
+
+      if (fm .gt. onemeps) then
+!     lo-side ice
+         speed = speed + max(uim,zero)
+      end if
+
+      if  (fm .lt. eps )  then
+!     lo-side void
+         uc = max(ucp,max(ucm,zero))
+         speed = speed - uc
+         dh(CHF_AUTOIX[i]) = dh(CHF_AUTOIX[i])
+     &        - uc*factor*h(CHF_AUTOIX[i])/f
+     &        - factor*min(zero,faceIceFlux(CHF_AUTOIX[i]))
+      end if
+
+      if (fp .gt. onemeps) then
+!     hi-side ice
+         speed = speed - min(uip,zero)
+      end if
+      
+      if (fp .lt. eps )  then
+!     hi-side void
+         uc = - min(ucm,min(ucp,zero))
+         speed = speed - uc
+         dh(CHF_AUTOIX[i]) = dh(CHF_AUTOIX[i])
+     &        - uc*factor*h(CHF_AUTOIX[i])/f
+     &        + factor*max(zero,faceIceFlux(CHF_OFFSETIX[i;+ioff]))
+      end if
+      
+
+      frac(CHF_AUTOIX[i]) = frac(CHF_AUTOIX[i]) + factor*speed
+      
+c     now limit to one
+      if (frac(CHF_AUTOIX[i]) .gt. one) then
+         frac(CHF_AUTOIX[i]) = one
+      endif
+c     and to zero
+      if (frac(CHF_AUTOIX[i]) .lt. zero) then
+         frac(CHF_AUTOIX[i]) = zero
+      endif
+
+      
+      CHF_ENDDO
+      return
+      end
+
+
+      
+c--------------------------------------------------------------
+c     Compute face-centred calving rate dir-component,
+c     normal to caving front
+c
+c     INPUTS/OUTPUTS:
+c     facerate <= face-centred calving rate, dir component of vector
+c     hsrc  <= cell-centred thickness source associated with ablation
+c     frac  <=> ice mask between 0 (no ice) and 1 (fully-covered)
+c     rate  => cell-centered calving rate. Should be >= 0 (negative values ignored)
+c     box => face centred subregion 
+c     idir => component direction (do this one direction at a time)  
+c--------------------------------------------------------------
+      subroutine ablaterate_slc_suboptimal(CHF_FRA1[facerate],
+     &     CHF_CONST_FRA1[frac],
+     &     CHF_CONST_FRA1[rate],
+     &     CHF_REAL[eps],
+     &     CHF_BOX[box],
+     &     CHF_INT[idir])
+
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ioff]
+      integer CHF_AUTODECL[itrans]
+      integer CHF_AUTODECL[lu]
+      integer CHF_AUTODECL[ld]
+      REAL_T  speed, grad_frac_n,grad_frac_t,fcrate
+
+
+      CHF_DTERM[
+      ioff0 = CHF_ID(0,idir);
+      ioff1 = CHF_ID(1,idir);
+      ioff2 = CHF_ID(2,idir)]
+
+      CHF_DTERM[
+      itrans0 = CHF_ID(1,idir);
+      itrans1 = CHF_ID(0,idir);
+      itrans2 = CHF_ID(2,idir)]
+
+      
+c     left up cell
+      CHF_DTERM[
+      lu0 = CHF_ID(1,idir) - CHF_ID(0,idir);
+      lu1 = CHF_ID(0,idir) - CHF_ID(1,idir);
+      lu2 = CHF_ID(2,idir) - CHF_ID(2,idir)]
+
+c     left down cell
+      CHF_DTERM[
+      ld0 = - CHF_ID(1,idir) - CHF_ID(0,idir);
+      ld1 = - CHF_ID(0,idir) - CHF_ID(1,idir);
+      ld2 = - CHF_ID(2,idir) - CHF_ID(2,idir)]
+      
+      
+      CHF_AUTOMULTIDO[box; i]
+      speed = zero
+
+c     face-centred calving rate
+      fcrate = max(rate(CHF_AUTOIX[i]), rate(CHF_OFFSETIX[i;-ioff]))
+      
+      if (fcrate .gt. zero) then
+
+c     magntitude of undivided transverse component of grad frac
+         grad_frac_t = 0.25d0 * (
+     &        +abs(frac(CHF_AUTOIX[i])
+     &            -frac(CHF_OFFSETIX[i;+itrans]))
+     &        +abs(frac(CHF_AUTOIX[i])
+     &            -frac(CHF_OFFSETIX[i;-itrans]))
+     &        +abs(frac(CHF_OFFSETIX[i;-ioff])
+     &        -frac(CHF_OFFSETIX[i;+lu]))
+     &        +abs(frac(CHF_OFFSETIX[i;-ioff])
+     &        -frac(CHF_OFFSETIX[i;+ld]))         
+     &        )
+
+c     normal component of grad frac
+         grad_frac_n = frac(CHF_AUTOIX[i])
+     &        - frac(CHF_OFFSETIX[i;-ioff]) 
+
+
+c     normal component of grad frac / | grad frac |
+         grad_frac_n = grad_frac_n /
+     &        sqrt(grad_frac_n**2 + grad_frac_t**2 + 1.0d-12)
+
+         speed = zero
+c     front on lower side
+         if (frac(CHF_OFFSETIX[i;-ioff]).lt.eps) then
+            speed = speed + max(grad_frac_n,zero) * fcrate
+         end if
+c     front on upper side        
+         if (frac(CHF_AUTOIX[i]).lt.eps) then
+            speed = speed + min(grad_frac_n,zero) * fcrate
+         end if
+
+         facerate(CHF_AUTOIX[i]) = speed
+         
+      end if
+      
+
+      CHF_ENDDO
+      
+
+      return 
+      end 
+      
+      
+c--------------------------------------------------------------
+c     Compute face-centred calving rate dir-component,
+c     normal to caving front
+c     also ice thickness change from cell centred calving
+c     rate scalar and current ice fraction
+c
+c     INPUTS/OUTPUTS:
+c     facerate <= face-centred calving rate, dir component of vector
+c     hsrc  <= cell-centred thickness source associated with ablation
+c     frac  <=> ice mask between 0 (no ice) and 1 (fully-covered)
+c     rate  => cell-centered calving rate. Should be >= 0 (negative values ignored)
+c     box => cell-centred subregion 
+c     idir => component direction (do this one direction at a time)  
+c--------------------------------------------------------------
+      subroutine ablateratecc_slc_suboptimal(CHF_FRA1[facerate],
+     &     CHF_CONST_FRA1[frac],
+     &     CHF_CONST_FRA1[rate],
+     &     CHF_REAL[eps],
+     &     CHF_BOX[box],
+     &     CHF_INT[idir])
+      
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ioff]
+      integer CHF_AUTODECL[itrans]
+      REAL_T  speed, grad_frac_n,grad_frac_t
+
+      
+      CHF_DTERM[
+      ioff0 = CHF_ID(0,idir);
+      ioff1 = CHF_ID(1,idir);
+      ioff2 = CHF_ID(2,idir)]
+
+      CHF_DTERM[
+      itrans0 = CHF_ID(1,idir);
+      itrans1 = CHF_ID(0,idir);
+      itrans2 = CHF_ID(2,idir)]
+      
+      CHF_AUTOMULTIDO[box; i]
+      speed = zero
+
+      if ((rate(CHF_AUTOIX[i]).gt.zero)) then
+         
+         grad_frac_t = half * (
+     &        +abs(frac(CHF_AUTOIX[i])-frac(CHF_OFFSETIX[i;+itrans]))
+     &        +abs(frac(CHF_AUTOIX[i])-frac(CHF_OFFSETIX[i;-itrans]))
+     &        )
+         speed = zero
+c     lower side
+         if (frac(CHF_OFFSETIX[i;-ioff]).lt.eps) then
+            grad_frac_n = frac(CHF_AUTOIX[i])
+     &           - frac(CHF_OFFSETIX[i;-ioff]) 
+            grad_frac_n = grad_frac_n /
+     &           sqrt(grad_frac_n**2 + grad_frac_t**2 + 1.0d-12)
+            speed = speed + max(grad_frac_n,zero) * rate(CHF_AUTOIX[i])
+         end if
+         
+c     upper side
+         if (frac(CHF_OFFSETIX[i;+ioff]).lt.eps) then
+            grad_frac_n = -frac(CHF_AUTOIX[i])
+     &           +  frac(CHF_OFFSETIX[i;+ioff]) 
+            grad_frac_n = grad_frac_n /
+     &           sqrt(grad_frac_n**2 + grad_frac_t**2 + 1.0d-12)
+            speed =  speed - min(grad_frac_n,zero) * rate(CHF_AUTOIX[i])
+         end if
+
+         if (speed .gt. TINY_NORM) then
+            facerate(CHF_OFFSETIX[i;+ioff]) = -speed
+         end if
+         
+      endif  
+      CHF_ENDDO
+      return
+      end
+
+
+
+
+c -------------------------------------------------------------
+c The relative velocity at the ice front, (U,V) is given by either
+c   U = u - nx calvingRate
+c   V = v - ny calvingRate
+c where (u,v) is the estimate of the ice velocity at the front and
+c (nx, ny) is the unit outward normal to the front. Or
+c   U = u - \hat{u} calvingRate
+c   V = v - \hat{v} calvingRate
+c \hat{} is the unit vector. 
+c u,v is etimated using either the cell-face or cell-centred velocity nearest to the front.
+c 
+c  INPUTS/OUTPUTS:
+c  oldFrac           => ice fraction mask. Used to determine location of front
+c  uFaceVel          => x-compt of cell face ice velocity
+c  vFaceVel          => y-compt of cell face ice velocity
+c  cRate             => calving rate applied to the ice front
+c  ccVel             => cell-centred ice velocity
+c  tmpVel           <=> estimated ice velocity at the front
+c  relativeFrontVel <=> relative velocity at the ice front
+c  normalCalving     => flag to determine the direction of calving; 1 normal to the front, 0 parallel to the ice flow at the front.
+c  epsFrac           => threshold for determining full or empty cell.  
+c  epsVel            => threshold for determining zero speed.
+c  iStep             => current time iteration
+c  box               => subregion over which to update mask
+c -------------------------------------------------------------
+
+      subroutine FINDFRONTVEL(CHF_CONST_FRA1[oldFrac],
+     &                      CHF_CONST_FRA1[uFaceVel],
+     &                      CHF_CONST_FRA1[vFaceVel],
+     &                      CHF_CONST_FRA1[cRate],
+     &                      CHF_CONST_FRA1[topg],
+     &                      CHF_CONST_FIA1[mask],
+     &                      CHF_CONST_FRA[ccVel],
+     &                      CHF_FRA[tmpVel],
+     &                      CHF_FRA[relativeVel],
+     &                      CHF_CONST_INT[normalCalving],
+     &                      CHF_CONST_REAL[epsFrac],
+     &                      CHF_CONST_REAL[epsVel],
+     &                      CHF_CONST_REAL[dx],
+     &                      CHF_CONST_INT[iStep],
+     &                      CHF_BOX[box])
+      
+      integer CHF_AUTODECL[i], CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      integer ncomp, idx(CH_SPACEDIM)
+      integer idir, jdir, ii, jj, isSet(CH_SPACEDIM)
+      integer nSheet, nIceFree, nOcean, nCorner
+      integer in(CH_SPACEDIM),ie(CH_SPACEDIM),is(CH_SPACEDIM),iw(CH_SPACEDIM)
+      REAL_T vel(CH_SPACEDIM), grad(CH_SPACEDIM)
+      REAL_T calvingRate, critFrac
+      REAL_T u, v, speed, uUnit, vUnit
+
+      in=0
+      is=0
+      ie=0
+      iw=0
+
+      critFrac=0.5d0     
+           
+      ncomp = CHF_NCOMP[relativeVel]
+      idx=0
+
+      CHF_AUTOMULTIDO[box; i]
+
+        vel(1:CH_SPACEDIM)=0.0d0
+        isSet(1:CH_SPACEDIM)=0
+
+        idx(1:ncomp)=(/ CHF_AUTOIX[i] /)
+
+        nOcean=0
+        nCorner=0
+           
+c Partial cell
+        if ((abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) .and. 
+     &       (abs(oldFrac(CHF_AUTOIX[i])-1.0d0) .gt. epsFrac)) then
+
+           do idir = 0, CH_SPACEDIM-1
+              ii=idir+1
+              vel(ii)=ccVel(CHF_AUTOIX[i],idir)
+              isSet(ii)=1
+           enddo
+
+        else
+
+           idx(1:ncomp)=(/ CHF_AUTOIX[i] /)
+
+           nSheet=0
+           nIceFree=0
+
+           if (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              nSheet=1
+           elseif (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              nIceFree=1
+           endif
+               
+           do idir = 0, CH_SPACEDIM-1
+
+              tmpVel(CHF_AUTOIX[i],idir)=0.0d0
+              relativeVel(CHF_AUTOIX[i],idir)=0.0d0
+
+              CHF_AUTOID[ioff;idir]
+
+              if (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) then
+                 nSheet = nSheet + 1
+              elseif (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) then
+                 nIceFree = nIceFree + 1
+              endif
+              if (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) then
+                 nSheet = nSheet + 1
+              elseif (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) then
+                 nIceFree = nIceFree + 1
+              endif
+
+           enddo
+
+           if ((nSheet .eq. 5) .or. (nIceFree .eq. 5)) then
+              cycle
+           endif
+
+           if (nSheet .eq. 0) then
+c  Check corners for full ice cells        
+
+              CHF_AUTOID[ioff;0]
+              CHF_AUTOID[joff;1]
+
+              in(1:ncomp)=(/ CHF_OFFSETIX[i;+joff] /)
+              ie(1:ncomp)=(/ CHF_OFFSETIX[i;+ioff] /) 
+              is(1:ncomp)=(/ CHF_OFFSETIX[i;-joff] /)
+              iw(1:ncomp)=(/ CHF_OFFSETIX[i;-ioff] /)
+
+              if (abs(1.0d0-oldFrac(iw(1),in(2))) .lt. epsFrac) then
+                 nCorner = nCorner+1
+              elseif (abs(1.0d0-oldFrac(ie(1),in(2))) .lt. epsFrac) then
+                 nCorner = nCorner+1
+              elseif (abs(1.0d0-oldFrac(iw(1),is(2))) .lt. epsFrac) then
+                 nCorner = nCorner+1
+              elseif (abs(1.0d0-oldFrac(ie(1),is(2))) .lt. epsFrac) then
+                 nCorner = nCorner+1
+              endif
+              
+              if (nCorner .eq. 0) cycle
+
+c Put an ice front velocity into the empty corner cell
+              if (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+                 if (abs(1.0d0-oldFrac(iw(1),in(2))) .lt. epsFrac) then
+                    if (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. critFrac) then
+                       vel(1)=uFaceVel(CHF_AUTOIX[i])
+                       isSet(1)=1
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) then
+                       vel(1)=ccVel(CHF_OFFSETIX[i;-ioff],0)
+                       isSet(1)=1
+                    endif
+                    if (abs(oldFrac(CHF_OFFSETIX[i;+joff])) .gt. critFrac) then
+                       vel(2)=vFaceVel(CHF_OFFSETIX[i;+joff])
+                       isSet(2)=1
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;+joff])) .gt. epsFrac) then
+                       vel(2)=ccVel(CHF_OFFSETIX[i;+joff],1)
+                       isSet(2)=1
+                    endif
+                    if ((isSet(1)+isSet(2)) .eq. 1) then
+                       if (isSet(1) .eq. 1) then
+                          vel(2)=ccVel(CHF_OFFSETIX[i;-ioff],1)
+                          isSet(2)=1
+                       else
+                          vel(1)=ccVel(CHF_OFFSETIX[i;+joff],0)
+                          isSet(1)=1
+                       endif
+                    endif
+
+                 elseif (abs(1.0d0-oldFrac(ie(1),in(2))) .lt. epsFrac) then
+                    if (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. critFrac) then
+                       vel(1)=uFaceVel(CHF_OFFSETIX[i;+ioff])
+                       isSet(1)=1
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) then
+                       vel(1)=ccVel(CHF_OFFSETIX[i;+ioff],0)
+                       isSet(1)=1
+                    endif
+                    if (abs(oldFrac(CHF_OFFSETIX[i;+joff])) .gt. critFrac) then
+                       vel(2)=vFaceVel(CHF_OFFSETIX[i;+joff])
+                       isSet(2)=1
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;+joff])) .gt. epsFrac) then
+                       vel(2)=ccVel(CHF_OFFSETIX[i;+joff],1)
+                       isSet(2)=1
+                    endif
+                    if ((isSet(1)+isSet(2)) .eq. 1) then
+                       if (isSet(1) .eq. 1) then
+                          vel(2)=ccVel(CHF_OFFSETIX[i;+ioff],1)
+                          isSet(2)=1
+                       else
+                          vel(1)=ccVel(CHF_OFFSETIX[i;+joff],0)
+                          isSet(1)=1
+                       endif
+                    endif
+
+                 elseif (abs(1.0d0-oldFrac(iw(1),is(2))) .lt. epsFrac) then
+                    if (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. critFrac) then
+                       vel(1)=uFaceVel(CHF_AUTOIX[i])
+                       isSet(1)=1
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) then
+                       vel(1)=ccVel(CHF_OFFSETIX[i;-ioff],0)
+                       isSet(1)=1
+                    endif
+                    if (abs(oldFrac(CHF_OFFSETIX[i;-joff])) .gt. critFrac) then
+                       vel(2)=vFaceVel(CHF_AUTOIX[i])
+                       isSet(2)=1
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;-joff])) .gt. epsFrac) then
+                       vel(2)=ccVel(CHF_OFFSETIX[i;-joff],1)
+                       isSet(2)=1
+                    endif
+                    if ((isSet(1)+isSet(2)) .eq. 1) then
+                       if (isSet(1) .eq. 1) then
+                          vel(2)=ccVel(CHF_OFFSETIX[i;-ioff],1)
+                          isSet(2)=1
+                       else
+                          vel(1)=ccVel(CHF_OFFSETIX[i;-joff],0)
+                          isSet(1)=1
+                       endif
+                    endif
+
+                 elseif (abs(1.0d0-oldFrac(ie(1),is(2))) .lt. epsFrac) then
+                    if (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. critFrac) then
+                       vel(1)=uFaceVel(CHF_OFFSETIX[i;+ioff])
+                       isSet(1)=1
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) then
+                       vel(1)=ccVel(CHF_OFFSETIX[i;+ioff],0)
+                       isSet(1)=1
+                    endif
+                    if (abs(oldFrac(CHF_OFFSETIX[i;-joff])) .gt.critFrac) then
+                       vel(2)=vFaceVel(CHF_AUTOIX[i])
+                       isSet(2)=1
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;-joff])) .gt. epsFrac) then
+                       vel(2)=ccVel(CHF_OFFSETIX[i;-joff],1)
+                       isSet(2)=1
+                    endif
+                    if ((isSet(1)+isSet(2)) .eq. 1) then
+                       if (isSet(1) .eq. 1) then
+                          vel(2)=ccVel(CHF_OFFSETIX[i;+ioff],1)
+                          isSet(2)=1
+                       else
+                          vel(1)=ccVel(CHF_OFFSETIX[i;-joff],0)
+                          isSet(1)=1
+                       endif
+                    endif
+
+                 endif
+                 if ((isSet(1)+isSet(2)) .eq. 0) cycle
+
+              endif
+
+           endif
+        endif
+
+c Set the other ice front velocity
+        if ((isSet(1)+isSet(2)) .eq. 0) then
+           do idir = 0, CH_SPACEDIM-1
+
+              CHF_AUTOID[ioff;idir]
+              ii=idir+1
+
+              jdir=mod(idir+1,2)
+              jj=jdir+1
+
+c Advance of the front into empty cell
+              if (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+                 if (nSheet .gt. 0) then
+                    if ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &                    (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac)) then
+                       if (idir .eq. 0) then
+                          vel(ii)=0.5d0*(uFaceVel(CHF_AUTOIX[i]) +
+     &                             uFaceVel(CHF_OFFSETIX[i;+ioff]))
+                          isSet(ii)=1
+                       else
+                          vel(ii)=0.5d0*(vFaceVel(CHF_AUTOIX[i]) +
+     &                             vFaceVel(CHF_OFFSETIX[i;+ioff]))
+                          isSet(ii)=1
+                       endif
+
+                    elseif (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) then
+                       if (idir .eq. 0) then
+                          vel(ii)=uFaceVel(CHF_AUTOIX[i])
+                          isSet(ii)=1
+                       else
+                          vel(ii)=vFaceVel(CHF_AUTOIX[i])
+                          isSet(ii)=1
+                       endif
+
+                    elseif (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) then
+                       if (idir .eq. 0) then
+                          vel(ii)=uFaceVel(CHF_OFFSETIX[i;+ioff])
+                          isSet(ii)=1
+                       else
+                          vel(ii)=vFaceVel(CHF_OFFSETIX[i;+ioff])
+                          isSet(ii)=1
+                       endif
+
+                    elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and.
+     &                    (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac)) then
+                       vel(ii)=0.5d0*(ccVel(CHF_OFFSETIX[i;+ioff],idir) + 
+     &                      ccVel(CHF_OFFSETIX[i;-ioff],idir))
+                       isSet(ii)=1
+
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) then
+                       vel(ii)=ccVel(CHF_OFFSETIX[i;+ioff],idir)
+                       isSet(ii)=1
+
+                    elseif (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) then
+                       vel(ii)=ccVel(CHF_OFFSETIX[i;-ioff],idir)
+                       isSet(ii)=1
+                    endif
+
+                    if (isSet(jj) .eq. 0) then
+                       if ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and.
+     &                       (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac)) then
+                          vel(jj)=0.5d0*(ccVel(CHF_OFFSETIX[i;-ioff],jdir) + 
+     &                           ccVel(CHF_OFFSETIX[i;+ioff],jdir))
+                          isSet(jj)=1
+                       elseif (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) then
+                          vel(jj)=ccVel(CHF_OFFSETIX[i;+ioff],jdir)
+                          isSet(jj)=1
+                       elseif (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) then
+                          vel(jj)=ccVel(CHF_OFFSETIX[i;-ioff],jdir)
+                          isSet(jj)=1
+                       endif
+                    endif
+
+                 endif
+
+c Full cell
+              elseif (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+
+                 if ((nIceFree .gt. 0) .or. (nSheet .le. 3)) then
+c Set to cell face value if next to empty cell.
+                    if ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &                   (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac)) then 
+                       if (idir .eq. 0) then
+                          vel(ii)=uFaceVel(CHF_AUTOIX[i])
+                          isSet(ii)=1
+                       else
+                          vel(ii)=vFaceVel(CHF_AUTOIX[i])
+                          isSet(ii)=1
+                       endif                       
+                    elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &                   (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac)) then
+                       if (idir .eq. 0) then
+                          vel(ii)=uFaceVel(CHF_OFFSETIX[i;+ioff])
+                          isSet(ii)=1
+                       else
+                          vel(ii)=vFaceVel(CHF_OFFSETIX[i;+ioff])
+                          isSet(ii)=1
+                       endif
+                       isSet(ii)=1
+                    else
+                       vel(ii)=ccVel(CHF_AUTOIX[i],idir)
+                       isSet(ii)=1
+                    endif
+                 endif
+
+              endif
+
+           enddo
+
+        endif
+
+        if ((isSet(1)+isSet(2)) .eq. 0) cycle 
+
+        u=vel(1)
+        v=vel(2)
+
+c Check for open ocean
+        do idir = 0, CH_SPACEDIM-1
+
+           CHF_AUTOID[ioff;idir]
+
+           if (mask(CHF_OFFSETIX[i;+ioff]) .eq. OCEANMASKVAL) then
+              nOcean = nOcean + 1
+           endif
+           if (mask(CHF_OFFSETIX[i;-ioff]) .eq. OCEANMASKVAL) then
+              nOcean = nOcean + 1
+           endif
+
+        enddo
+ 
+        if ((nOcean .eq. 0) .and. (abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac)) then
+c  Check corners for open ocean        
+
+           if (mask(CHF_AUTOIX[i]) .eq. OCEANMASKVAL) then
+              nOcean = nOcean+1
+           endif
+
+            CHF_AUTOID[ioff;0]
+            CHF_AUTOID[joff;1]
+
+            in(1:ncomp)=(/ CHF_OFFSETIX[i;+joff] /)
+            ie(1:ncomp)=(/ CHF_OFFSETIX[i;+ioff] /) 
+            is(1:ncomp)=(/ CHF_OFFSETIX[i;-joff] /)
+            iw(1:ncomp)=(/ CHF_OFFSETIX[i;-ioff] /)
+
+            if (mask(iw(1),in(2)) .eq. OCEANMASKVAL) then
+               nOcean = nOcean+1
+            elseif (mask(ie(1),in(2)) .eq. OCEANMASKVAL) then
+               nOcean = nOcean+1
+            elseif (mask(iw(1),is(2)) .eq. OCEANMASKVAL) then
+               nOcean = nOcean+1
+            elseif (mask(ie(1),is(2)) .eq. OCEANMASKVAL) then
+               nOcean = nOcean+1
+            endif
+
+        endif
+        
+        if (nOcean .gt. 0) then
+
+           calvingRate=cRate(CHF_AUTOIX[i])
+
+           if ((normalCalving .eq. 1) .or. (normalCalving .eq. 2)) then
+
+              grad(1:CH_SPACEDIM)=0.0d0
+
+              do idir = 0, CH_SPACEDIM-1
+
+                 CHF_AUTOID[ioff;idir]
+                 ii=idir+1
+
+                 if ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &                (mask(CHF_OFFSETIX[i;-ioff]) .ne. OCEANMASKVAL)) then
+
+                    grad(ii)=(oldFrac(CHF_OFFSETIX[i;+ioff])-oldFrac(CHF_AUTOIX[i]))/dx
+
+                 elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &               (mask(CHF_OFFSETIX[i;+ioff]) .ne. OCEANMASKVAL)) then
+
+                    grad(ii)=(oldFrac(CHF_AUTOIX[i])-oldFrac(CHF_OFFSETIX[i;-ioff]))/dx
+
+                 elseif ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &               (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac)) then
+
+                    grad(ii)=1.0d0/dx
+
+                 elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &               (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac)) then
+
+                    grad(ii)=-1.0d0/dx
+
+                 else 
+
+                    if ((abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) .and.
+     &                    (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .gt. epsFrac)) then
+
+                       if ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &                      ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) .and.
+     &                      (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac))) then
+
+                          grad(ii)=(1.0d0-0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;-ioff])))/dx
+
+                       elseif ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &                      ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and.
+     &                      (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac))) then
+
+                          grad(ii)=(0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;+ioff]))-1.0d0)/dx
+
+                       elseif ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &                      ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and.
+     &                      (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac))) then
+
+                          grad(ii)=0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;+ioff]))/dx
+
+                       elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &                      ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) .and.
+     &                      (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac))) then
+
+                          grad(ii)=-0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;-ioff]))/dx
+
+                       else
+
+                          grad(ii)=0.5d0*(oldFrac(CHF_OFFSETIX[i;+ioff])-oldFrac(CHF_OFFSETIX[i;-ioff]))/dx
+
+                       endif
+
+                    elseif (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+ 
+                       grad(ii)=0.5d0*(oldFrac(CHF_OFFSETIX[i;+ioff])-oldFrac(CHF_OFFSETIX[i;-ioff]))/dx
+
+                    elseif (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+
+                       grad(ii)=0.5d0*(oldFrac(CHF_OFFSETIX[i;+ioff])-oldFrac(CHF_OFFSETIX[i;-ioff]))/dx
+
+                    endif
+
+                 endif
+
+              enddo
+
+
+              speed=dsqrt(grad(1)*grad(1)+grad(2)*grad(2))
+              if (speed .lt. epsVel) then
+                 uUnit=0.0d0
+                 vUnit=0.0d0
+              else
+                 uUnit=-grad(1)/speed
+                 vUnit=-grad(2)/speed
+              endif
+        
+           else
+
+              speed=dsqrt(u*u+v*v)
+              if (speed .lt. epsVel) then
+                 uUnit=0.0d0
+                 vUnit=0.0d0
+              else
+                 uUnit=u/speed
+                 vUnit=v/speed
+              endif
+
+           endif
+		   
+           if (normalCalving .eq. 2) then
+              speed=dsqrt(u*u+v*v)
+              if (speed .lt. epsVel) then
+                 uUnit=0.0d0
+                 vUnit=0.0d0
+              else
+c                 uUnit=(uUnit+(u/speed))/2.0
+c                 vUnit=(vUnit+(v/speed))/2.0
+                 uUnit=(0.99*uUnit) + (0.01*(u/speed))
+                 vUnit=(0.99*vUnit) + (0.01*(v/speed))
+              endif
+           endif
+
+           tmpVel(CHF_AUTOIX[i],0)=uUnit
+           tmpVel(CHF_AUTOIX[i],1)=vUnit
+
+           relativeVel(CHF_AUTOIX[i],0)=u-calvingRate*uUnit
+           relativeVel(CHF_AUTOIX[i],1)=v-calvingRate*vUnit
+
+        else
+
+           tmpVel(CHF_AUTOIX[i],0)=0.0d0
+           tmpVel(CHF_AUTOIX[i],1)=0.0d0
+
+           relativeVel(CHF_AUTOIX[i],0)=u
+           relativeVel(CHF_AUTOIX[i],1)=v
+
+        endif
+
+c$$$         if (((isSet(1)+isSet(2)) .eq. 1) .or. (nCorner .gt. 1)) then
+c$$$
+c$$$           CHF_AUTOID[ioff;0]
+c$$$           CHF_AUTOID[joff;1]
+c$$$
+c$$$              in(1:ncomp)=(/ CHF_OFFSETIX[i;+joff] /)
+c$$$              ie(1:ncomp)=(/ CHF_OFFSETIX[i;+ioff] /)
+c$$$              is(1:ncomp)=(/ CHF_OFFSETIX[i;-joff] /)
+c$$$              iw(1:ncomp)=(/ CHF_OFFSETIX[i;-ioff] /)
+c$$$
+c$$$              write(*,*) "Spurious: Velocity not set", CHF_AUTOIX[i], iStep
+c$$$              write(*,*) "Spurious: flags", nSheet, nIceFree, nCorner
+c$$$              write(*,*) "Spurious: velocity", u,v
+c$$$              write(*,*) "Spurious: unit velocity", uUnit,vUnit
+c$$$              write(*,*) "Spurious: old frac"
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Spurious: ", oldFrac(iw(1),in(2)), 
+c$$$     &               oldFrac(CHF_OFFSETIX[i;+joff]), oldFrac(ie(1),in(2))
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Spurious: ", oldFrac(CHF_OFFSETIX[i;-ioff]), 
+c$$$     &               oldFrac(CHF_AUTOIX[i]), oldFrac(CHF_OFFSETIX[i;+ioff])
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Spurious: ", oldFrac(iw(1),is(2)), 
+c$$$     &               oldFrac(CHF_OFFSETIX[i;-joff]), oldFrac(ie(1),is(2))
+c$$$              write(*,*) "Spurious: u cc velocity"
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Spurious: ", ccVel(iw(1),in(2),0), 
+c$$$     &               ccVel(CHF_OFFSETIX[i;+joff],0), ccVel(ie(1),in(2),0)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Spurious: ", ccVel(CHF_OFFSETIX[i;-ioff],0), 
+c$$$     &               ccVel(CHF_AUTOIX[i],0), ccVel(CHF_OFFSETIX[i;+ioff],0)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Spurious: ", ccVel(iw(1),is(2),0), 
+c$$$     &               ccVel(CHF_OFFSETIX[i;-joff],0), ccVel(ie(1),is(2),0)
+c$$$              write(*,*) "Spurious: v cc velocity"
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Spurious: ", ccVel(iw(1),in(2),1), 
+c$$$     &               ccVel(CHF_OFFSETIX[i;+joff],1), ccVel(ie(1),in(2),1)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Spurious: ", ccVel(CHF_OFFSETIX[i;-ioff],1), 
+c$$$     &               ccVel(CHF_AUTOIX[i],1), ccVel(CHF_OFFSETIX[i;+ioff],1)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Spurious: ", ccVel(iw(1),is(2),1), 
+c$$$     &               ccVel(CHF_OFFSETIX[i;-joff],1), ccVel(ie(1),is(2),1)
+c$$$              write(*,*) "Spurious: u face velocity"
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Spurious: ", uFaceVel(iw(1),in(2)), 
+c$$$     &               uFaceVel(CHF_OFFSETIX[i;+joff]), uFaceVel(ie(1),in(2))
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Spurious: ", uFaceVel(CHF_OFFSETIX[i;-ioff]), 
+c$$$     &               uFaceVel(CHF_AUTOIX[i]), uFaceVel(CHF_OFFSETIX[i;+ioff])
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Spurious: ", uFaceVel(iw(1),is(2)), 
+c$$$     &               uFaceVel(CHF_OFFSETIX[i;-joff]), uFaceVel(ie(1),is(2))
+c$$$
+c$$$        endif
+        
+      CHF_ENDDO
+
+      return
+      end
+
+c -------------------------------------------------------------
+
+c -------------------------------------------------------------
+c  Search for an ice cliff at the ice sheet-ocean interface. Update an
+c  integer array iceCliff which identifies cells with ice cliffs.
+c 
+c  A cliff is defined as a cell which:
+c  - contains ice grounded below sea level
+c  - has a grounded full cell upstream
+c  - has open ocean downstream
+c  - has a surface height greater than the threshold for calving
+c
+c  We also tag the adjacent ocean cell as having an ice cliff so that a 
+c  calving rate is applied here.
+c 
+c  This used to be in CalvingModel.cpp: CliffCollapseCalvingModel. But it
+c  makes more sense to place it here.
+c 
+c  INPUTS/OUTPUTS:
+c  iceCliff        <=> identifies cells which are ice cliffs
+c  effMask          => mask based on the effective thickness
+c  effSurf          => effective surface height
+c  topg             => bed topography
+c  iceFrac          => ice fraction mask between 0 (no ice) and 1 (fully-covered)
+c  epsFrac          => threshold for determining full or empty cell.  
+c  threshold        => maximum ice cliff height 
+c  idir             => component direction (do this one direction at a time)
+c  box              => subregion over which to update mask
+c -------------------------------------------------------------
+      subroutine FINDICECLIFFS(CHF_FRA1[iceCliff],
+     &                         CHF_CONST_FIA1[effMask], 
+     &                         CHF_CONST_FRA1[effSurf],
+     &                         CHF_CONST_FRA1[topg],
+     &                         CHF_CONST_FRA1[iceFrac],
+     &                         CHF_CONST_REAL[epsFrac],
+     &                         CHF_CONST_REAL[threshold],
+     &                         CHF_CONST_INT[idir],
+     &                         CHF_BOX[box])
+
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      integer jdir
+      
+      integer CHF_AUTODECL[inw]
+      integer CHF_AUTODECL[isw]      
+            
+c     NW direction
+      CHF_DTERM[
+      inw0 = CHF_ID(1,idir) - CHF_ID(0,idir);
+      inw1 = CHF_ID(0,idir) - CHF_ID(1,idir);
+      inw2 = CHF_ID(2,idir) - CHF_ID(2,idir)]
+
+c     SW direction
+      CHF_DTERM[
+      isw0 = - CHF_ID(1,idir) - CHF_ID(0,idir);
+      isw1 = - CHF_ID(0,idir) - CHF_ID(1,idir);
+      isw2 = - CHF_ID(2,idir) - CHF_ID(2,idir)]
+
+      CHF_AUTOMULTIDO[box; i]
+
+        CHF_AUTOID[ioff;idir]
+
+        jdir=mod(idir+1,2)
+        CHF_AUTOID[joff;jdir]
+
+
+c  Check that we have ice in this cell and that it's grounded below sea level
+        if ((iceFrac(CHF_AUTOIX[i]) .gt. epsFrac) .and. (topg(CHF_AUTOIX[i]) .lt. 0.0) .and. (effMask(CHF_AUTOIX[i]) .eq. GROUNDEDMASKVAL)) then
+c  Check for open ocean downstream
+           if ((effMask(CHF_OFFSETIX[i;+ioff]) .eq. OPENSEAMASKVAL ) .and. (iceFrac(CHF_OFFSETIX[i;+ioff]) .lt. epsFrac)) then
+c  Check that the difference in effective surface height between this cell and the ocean cell is above the threshold for an ice cliff
+              if ((effSurf(CHF_AUTOIX[i]) - effSurf(CHF_OFFSETIX[i;+ioff])) .gt. threshold) then
+c  We have a cliff!
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+              
+c  Now check in the opposite direction
+           elseif ((effMask(CHF_OFFSETIX[i;-ioff]) .eq. OPENSEAMASKVAL ) .and. (iceFrac(CHF_OFFSETIX[i;-ioff]) .lt. epsFrac)) then
+              if ((effSurf(CHF_AUTOIX[i]) - effSurf(CHF_OFFSETIX[i;-ioff])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+              
+c  Now check the four diagonals as well.. NE
+           elseif ((effMask(CHF_OFFSETIX[i;-isw]) .eq. OPENSEAMASKVAL ) .and. (iceFrac(CHF_OFFSETIX[i;-isw]) .lt. epsFrac)) then
+              if ((effSurf(CHF_AUTOIX[i]) - effSurf(CHF_OFFSETIX[i;-isw])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+              
+c  NW
+           elseif ((effMask(CHF_OFFSETIX[i;+inw]) .eq. OPENSEAMASKVAL ) .and. (iceFrac(CHF_OFFSETIX[i;+inw]) .lt. epsFrac)) then
+              if ((effSurf(CHF_AUTOIX[i]) - effSurf(CHF_OFFSETIX[i;+inw])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+              
+c  SW
+           elseif ((effMask(CHF_OFFSETIX[i;+isw]) .eq. OPENSEAMASKVAL ) .and. (iceFrac(CHF_OFFSETIX[i;+isw]) .lt. epsFrac)) then
+              if ((effSurf(CHF_AUTOIX[i]) - effSurf(CHF_OFFSETIX[i;+isw])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+              
+c  SE
+           elseif ((effMask(CHF_OFFSETIX[i;-inw]) .eq. OPENSEAMASKVAL ) .and. (iceFrac(CHF_OFFSETIX[i;-inw]) .lt. epsFrac)) then
+              if ((effSurf(CHF_AUTOIX[i]) - effSurf(CHF_OFFSETIX[i;-inw])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+           endif
+
+c  Now check for adjacent ocean cells, which are also marked as cliffs. As before, check forwards, backwards then diagonals
+        elseif (effMask(CHF_AUTOIX[i]) .eq. OPENSEAMASKVAL) then
+c  Forwards
+           if ((effMask(CHF_OFFSETIX[i;-ioff]) .eq. GROUNDEDMASKVAL ) .and. (topg(CHF_OFFSETIX[i;-ioff]) .lt. 0.0)) then
+              if ((effSurf(CHF_OFFSETIX[i;-ioff]) - effSurf(CHF_AUTOIX[i])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+c  Backwards
+           elseif ((effMask(CHF_OFFSETIX[i;+ioff]) .eq. GROUNDEDMASKVAL ) .and. (topg(CHF_OFFSETIX[i;+ioff]) .lt. 0.0)) then
+              if ((effSurf(CHF_OFFSETIX[i;+ioff]) - effSurf(CHF_AUTOIX[i])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+c  NE
+           elseif ((effMask(CHF_OFFSETIX[i;-isw]) .eq. GROUNDEDMASKVAL ) .and. (topg(CHF_OFFSETIX[i;-isw]) .lt. 0.0)) then
+              if ((effSurf(CHF_OFFSETIX[i;-isw]) - effSurf(CHF_AUTOIX[i])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+c  NW
+           elseif ((effMask(CHF_OFFSETIX[i;+inw]) .eq. GROUNDEDMASKVAL ) .and. (topg(CHF_OFFSETIX[i;+inw]) .lt. 0.0)) then
+              if ((effSurf(CHF_OFFSETIX[i;+inw]) - effSurf(CHF_AUTOIX[i])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+c  SW
+           elseif ((effMask(CHF_OFFSETIX[i;+isw]) .eq. GROUNDEDMASKVAL ) .and. (topg(CHF_OFFSETIX[i;+isw]) .lt. 0.0)) then
+              if ((effSurf(CHF_OFFSETIX[i;+isw]) - effSurf(CHF_AUTOIX[i])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+c  SE
+           elseif ((effMask(CHF_OFFSETIX[i;-inw]) .eq. GROUNDEDMASKVAL ) .and. (topg(CHF_OFFSETIX[i;-inw]) .lt. 0.0)) then
+              if ((effSurf(CHF_OFFSETIX[i;-inw]) - effSurf(CHF_AUTOIX[i])) .gt. threshold) then
+                 iceCliff(CHF_AUTOIX[i])=1.0
+              endif
+           endif
+        endif
+
+      CHF_ENDDO
+      return
+      end      
+      
+c -------------------------------------------------------------
+c Advect the effective thickness from full cells into empty cells
+c This is based off ADVECTFRAC but is cruder since we don't need to calculate the new effective thickness
+c We're only interested in the case of advection into an empty cell
+c
+c Front information:
+c
+c   |None|  |None|  |Full|  front on upper cell face
+c             <-            advancing front
+c
+c   |Full|  |None|  |None|  front on lower cell face
+c             ->            advancing front
+c 
+c  INPUTS/OUTPUTS:
+c  effThck            => cell effective thickness (i.e. thickness/iceFrac)
+c  frac            <=> ice fraction mask between 0 (no ice) and 1 (fully-covered)
+c  oldFrac          => copy of ice fraction mask to determine location of front
+c  relativeFrontVel => relative velocity at the ice front
+c  dx               => cell spacing
+c  dt               => timestep
+c  epsFrac          => threshold for determining full or empty cell.  
+c  epsVel           => threshold for determining which direction the front is moving in.  
+c  box              => subregion over which to update mask
+c  idir             => component direction (do this one direction at a time)
+c -------------------------------------------------------------
+      subroutine ADVECTEFFTHCK(CHF_FRA1[effThck],
+     &                         CHF_FRA1[frac],    
+     &                         CHF_CONST_FRA1[oldFrac],    
+     &                         CHF_CONST_FRA1[relativeFrontVel],
+     &                         CHF_CONST_REAL[dx],
+     &                         CHF_CONST_REAL[dt],
+     &                         CHF_CONST_REAL[epsFrac],
+     &                         CHF_CONST_REAL[epsVel],
+     &                         CHF_BOX[box],
+     &                         CHF_CONST_INT[idir],
+     &                         CHF_CONST_INT[iStep])
+      
+
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      integer jdir, ido
+      REAL_T factor
+      REAL_T vel
+      REAL_T lowerFrac, upperFrac
+
+      ido=0
+      
+c  this assumes 2d and dx == dy
+      factor = dt/dx
+
+      CHF_AUTOMULTIDO[box; i]
+
+        CHF_AUTOID[ioff;idir]
+
+        jdir=mod(idir+1,2)
+        CHF_AUTOID[joff;jdir]
+
+        vel=relativeFrontVel(CHF_AUTOIX[i])
+        
+        if (abs(vel) .lt. epsVel) cycle
+
+        lowerFrac=0.0d0
+        upperFrac=0.0d0
+
+c  Looking for a front when ice is flowing in the negative direction. A front can lie on either the lower face, upper face or mid cell.
+        if ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and. (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac)) then
+           lowerFrac=0.0d0
+           upperFrac=0.0d0
+           if (vel .gt. 0.0d0) then
+c             Retreating front
+              if (oldFrac(CHF_AUTOIX[i]) .gt. epsFrac) then
+                 upperFrac=1.0d0
+              endif
+            elseif (vel .lt. 0.0d0) then
+c             Advancing front
+              if (oldFrac(CHF_AUTOIX[i]) .lt. (1.0d0-epsFrac)) then
+                 upperFrac=1.0d0
+                 effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;+ioff])
+              endif
+           endif
+
+c  Looking for a front when ice is flowing in the positive direction. 
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and. (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac)) then
+           lowerFrac=0.0d0
+           upperFrac=0.0d0
+           if (vel .lt. 0.0d0) then
+c             Retreating front
+              if (oldFrac(CHF_AUTOIX[i]) .gt. epsFrac) then
+                 lowerFrac=1.0d0
+              endif
+           elseif (vel .gt. 0.0d0) then
+c             Advancing front
+              if (oldFrac(CHF_AUTOIX[i]) .lt. (1.0d0-epsFrac)) then
+                 lowerFrac=1.0d0
+                 effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;-ioff])
+              endif
+           endif
+        
+c  Look for a front in the orthogonal direction. 
+        elseif (((abs(oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac) .and. (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac)) .or.
+     &          ((abs(oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac) .and. (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac))) then
+
+c  Allow front to advance or advect into an empty cell
+           if (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if (vel .lt. 0.0d0) then
+                 if (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) then
+                    lowerFrac=0.0d0
+                    upperFrac=1.0d0
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;+ioff])
+                 elseif (relativeFrontVel(CHF_OFFSETIX[i;+ioff]) .lt. -epsVel) then
+                    lowerFrac=0.0d0
+                    upperFrac=oldFrac(CHF_OFFSETIX[i;+ioff])
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;+ioff])
+                 endif
+              elseif (vel .gt. 0.0d0) then
+                 if (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) then
+                    lowerFrac=1.0d0
+                    upperFrac=0.0d0
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;-ioff])
+                 elseif (relativeFrontVel(CHF_OFFSETIX[i;-ioff]) .gt. epsVel) then
+                    lowerFrac=oldFrac(CHF_OFFSETIX[i;-ioff])
+                    upperFrac=0.0d0
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;-ioff])
+                 endif
+              endif
+           endif
+           
+c Full cell oneside partial cell the other not in direct contact with a front
+        elseif ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &         ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) .and. (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac))) then
+
+c      Empty cell.
+           if (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if (vel .lt. 0.0d0) then
+                 lowerFrac=0.0d0
+                 upperFrac=1.0d0
+                 effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;+ioff])
+              endif
+
+           endif
+
+        elseif ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &         ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and. (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac))) then
+
+c      Empty cell.
+           if (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if (vel .gt. 0.0d0) then
+                 lowerFrac=1.0d0
+                 upperFrac=0.0d0
+                 effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;-ioff])
+              endif 
+           endif
+
+c Partial cell oneside empty cell the other
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &         ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and. (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac))) then
+
+c      Empty cell
+           if (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if ((vel .lt. -epsVel) .and. (relativeFrontVel(CHF_OFFSETIX[i;+ioff]) .lt. -epsVel)) then
+                 if ((abs(oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac) .or. (abs(oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac)) then
+                    lowerFrac=0.0d0
+                    upperFrac=oldFrac(CHF_OFFSETIX[i;+ioff])
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;+ioff])
+                 endif
+              endif
+           endif
+           
+c Partial cell oneside empty cell the other
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &         ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) .and. (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac))) then
+
+c      Empty cell
+           if (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if ((vel .gt. epsVel) .and. (relativeFrontVel(CHF_OFFSETIX[i;-ioff]) .gt. epsVel)) then
+                 if ((abs(oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac) .or. (abs(oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac)) then
+                    lowerFrac=oldFrac(CHF_OFFSETIX[i;-ioff])
+                    upperFrac=0.0d0
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;-ioff])
+                 endif
+              endif
+           endif
+        endif
+
+        if (abs(vel*factor) .gt. 0.9d0) then
+           write(*,*) "CFL violation at", CHF_AUTOIX[i], vel*factor 
+        endif
+
+      CHF_ENDDO
+      return
+      end
+      
+
+c -------------------------------------------------------------
+c Update effective thickness in line with the spreading of ice in GETFRAC
+c Iterative process in 2d.
+c
+c  INPUTS/OUTPUTS:
+c  effThck         <=> effective thickness
+c  frac            <=> ice fraction mask between 0 (no ice) and 1 (fully-covered)
+c  oldFrac          => copy of ice fraction mask before advection (reference)
+c  copyFrac         => copy of ice fraction mask used to locate the front
+c  relativeFrontVel => relative velocity at the ice front
+c  epsFrac          => threshold for determining full or empty cell.  
+c  epsVel           => threshold for determining zero speed.
+c  iStep            => current time iteration
+c  icount           => current iteration
+c  iOutofRange     <=  is frac outside 0 or 1. 
+c  box              => subregion over which to update mask
+c -------------------------------------------------------------
+      subroutine GETEFFTHCK(CHF_FRA1[effThck],
+     &                      CHF_CONST_FRA1[frac],    
+     &                      CHF_CONST_FRA1[oldFrac],    
+     &                      CHF_CONST_FRA1[copyFrac],
+     &                      CHF_CONST_FRA[relativeVel],
+     &                      CHF_CONST_REAL[epsFrac],
+     &                      CHF_CONST_REAL[epsVel],
+     &                      CHF_CONST_INT[iStep],
+     &                      CHF_CONST_INT[icount],
+     &                      CHF_INT[iOutofRange],
+     &                      CHF_CONST_INT[lev],
+     &                      CHF_CONST_INT[MaxIter],
+     &                      CHF_BOX[box])
+      
+
+      integer CHF_AUTODECL[i], CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      integer idir, ncomp, idx(CH_SPACEDIM)
+      integer in(CH_SPACEDIM),ie(CH_SPACEDIM),is(CH_SPACEDIM),iw(CH_SPACEDIM)
+      integer iprint
+      REAL_T excess
+      REAL_T u, v, speed, uWeight, vWeight
+
+      ncomp = CHF_NCOMP[relativeVel]
+      idx = 0
+      ioutOfRange=0
+
+      CHF_AUTOMULTIDO[box; i]
+
+        idx(1:ncomp)=(/ CHF_AUTOIX[i] /)
+        iprint=0
+           
+        CHF_AUTOID[ioff;0]
+        CHF_AUTOID[joff;1]
+
+c Limit frac to between 0 and 1
+        if (copyFrac(CHF_AUTOIX[i]) .gt. 1.0d0) then
+           excess=(copyFrac(CHF_AUTOIX[i])-1.0d0)
+        elseif (copyFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+           excess=copyFrac(CHF_AUTOIX[i])
+        else
+           excess=0.0d0
+        endif
+        if (abs(excess) .gt. epsFrac) then
+           u=relativeVel(CHF_AUTOIX[i],0)
+           v=relativeVel(CHF_AUTOIX[i],1)
+           speed=dsqrt(u*u+v*v)
+           if (speed .lt. epsVel) then
+c iceFrac may go out of range near a corner between a calving front and spreading grounded ice, for example. 
+              iprint=1
+           endif
+        endif
+        frac(CHF_AUTOIX[i]) = frac(CHF_AUTOIX[i])-excess
+
+c Receive excess frac from a neighbouring cell
+        if (copyFrac(CHF_OFFSETIX[i;+ioff]) .gt. 1.0d0) then
+           u=relativeVel(CHF_OFFSETIX[i;+ioff],0)
+           if (u .lt. -epsVel) then
+              v=relativeVel(CHF_OFFSETIX[i;+ioff],1)
+              uWeight=abs(u)/(abs(u)+abs(v))
+              if (copyFrac(CHF_OFFSETIX[i;+ioff]) .gt. 1.0d0) then
+                 excess=copyFrac(CHF_OFFSETIX[i;+ioff])-1.0d0
+              else
+                 excess=copyFrac(CHF_OFFSETIX[i;+ioff])
+              endif
+c              frac(CHF_AUTOIX[i])=frac(CHF_AUTOIX[i])+excess*uWeight
+              if (oldFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+                 effThck(CHF_AUTOIX[i]) = effThck(CHF_OFFSETIX[i;+ioff])
+              endif
+           endif
+        endif
+
+        if (copyFrac(CHF_OFFSETIX[i;-ioff]) .gt. 1.0d0) then
+           u=relativeVel(CHF_OFFSETIX[i;-ioff],0)
+           if (u .gt. epsVel) then
+              v=relativeVel(CHF_OFFSETIX[i;-ioff],1)
+              uWeight=abs(u)/(abs(u)+abs(v))
+              if (copyFrac(CHF_OFFSETIX[i;-ioff]) .gt. 1.0d0) then
+                 excess=copyFrac(CHF_OFFSETIX[i;-ioff])-1.0d0
+              else
+                 excess=copyFrac(CHF_OFFSETIX[i;-ioff])
+              endif
+c              frac(CHF_AUTOIX[i])=frac(CHF_AUTOIX[i])+excess*uWeight
+              if (oldFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+                 effThck(CHF_AUTOIX[i]) = effThck(CHF_OFFSETIX[i;-ioff])
+              endif
+           endif
+        endif
+
+        if (copyFrac(CHF_OFFSETIX[i;+joff]) .gt. 1.0d0) then
+           v=relativeVel(CHF_OFFSETIX[i;+joff],1)
+           if (v .lt. -epsVel) then
+              u=relativeVel(CHF_OFFSETIX[i;+joff],0)
+              vWeight=abs(v)/(abs(u)+abs(v))
+              if (copyFrac(CHF_OFFSETIX[i;+joff]) .gt. 1.0d0) then
+                 excess=copyFrac(CHF_OFFSETIX[i;+joff])-1.0d0
+              else
+                 excess=copyFrac(CHF_OFFSETIX[i;+joff])
+              endif
+c              frac(CHF_AUTOIX[i])=frac(CHF_AUTOIX[i])+excess*vWeight
+              if (oldFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+                 effThck(CHF_AUTOIX[i]) = effThck(CHF_OFFSETIX[i;+joff])
+              endif
+           endif
+        endif
+
+        if (copyFrac(CHF_OFFSETIX[i;-joff]) .gt. 1.0d0) then
+           v=relativeVel(CHF_OFFSETIX[i;-joff],1)
+           if (v .gt. epsVel) then
+              u=relativeVel(CHF_OFFSETIX[i;-joff],0)
+              vWeight=abs(v)/(abs(u)+abs(v))
+              if (copyFrac(CHF_OFFSETIX[i;-joff]) .gt. 1.0d0) then
+                 excess=copyFrac(CHF_OFFSETIX[i;-joff])-1.0d0
+              else
+                 excess=copyFrac(CHF_OFFSETIX[i;-joff])
+              endif
+c              frac(CHF_AUTOIX[i])=frac(CHF_AUTOIX[i])+excess*vWeight
+              if (oldFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+                 effThck(CHF_AUTOIX[i]) = effThck(CHF_OFFSETIX[i;-joff])
+              endif
+           endif
+        endif
+
+        if ((frac(CHF_AUTOIX[i]) .gt. (1.0d0+epsFrac)) .or. 
+     &     (frac(CHF_AUTOIX[i]) .lt. -epsVel)) then
+
+           if ((icount .eq. (MaxIter-1)) .or. (iprint .eq. 1)) then
+              
+            if (icount .eq. (MaxIter-1)) then
+              if (frac(CHF_AUTOIX[i]) .lt. -epsVel) then
+                 effThck(CHF_AUTOIX[i])=0.0d0
+              endif
+            end if
+
+           endif
+        endif
+
+      CHF_ENDDO
+
+      return
+      end
+      
+
+c -------------------------------------------------------------
+c Compute "area advection" of real-valued ice mask
+c Solving 
+c     frac_t + U frac_x + V frac_y = 0
+c where (U,V) is the relative velocity at the ice front.
+c
+c Front information:
+c
+c  |frac_i-1| |frac_i| |frac_i+1|
+c               ->             travel direction of front in the i th cell
+c
+c   |Part|  |Part|  |Part|  
+c            <->            advection parallel to the front
+c   |None|  |Part|  |None|  
+c            <->            no advection in this direction
+c
+c   |None|  |None|  |Full|  front on upper cell face
+c             <-            advancing front
+c   |None|  |Part|  |Full|  front inside cell
+c            <->            either advancing or retreating
+c   |None|  |Full|  |Full|  front on lower cell face
+c             ->            retreating front
+c
+c   |Full|  |None|  |None|  front on lower cell face
+c             ->            advancing front
+c   |Full|  |Part|  |None|  front inside cell
+c            <->            either advancing or retreating
+c   |Full|  |Full|  |None|  front on upper cell face
+c             <-            retreating front
+c 
+c  INPUTS/OUTPUTS:
+c  frac            <=> ice fraction mask between 0 (no ice) and 1 (fully-covered)
+c  oldFrac          => copy of ice fraction mask to determine location of front
+c  relativeFrontVel => relative velocity at the ice front
+c  dx               => cell spacing
+c  dt               => timestep
+c  epsFrac          => threshold for determining full or empty cell.  
+c  epsVel           => threshold for determining which direction the front is moving in.  
+c  box              => subregion over which to update mask
+c  idir             => component direction (do this one direction at a time)
+c -------------------------------------------------------------
+      subroutine ADVECTFRAC(CHF_FRA1[frac],
+     &                      CHF_CONST_FRA1[oldFrac],    
+     &                      CHF_CONST_FRA1[relativeFrontVel],
+     &                      CHF_CONST_REAL[dx],
+     &                      CHF_CONST_REAL[dt],
+     &                      CHF_CONST_REAL[epsFrac],
+     &                      CHF_CONST_REAL[epsVel],
+     &                      CHF_BOX[box],
+     &                      CHF_CONST_INT[idir])
+      
+
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      integer jdir, ido
+      REAL_T factor
+      REAL_T vel
+      REAL_T lowerFrac, upperFrac
+
+      ido=0
+
+c  this assumes 2d and dx == dy
+      factor = dt/dx
+
+      CHF_AUTOMULTIDO[box; i]
+
+        CHF_AUTOID[ioff;idir]
+
+        jdir=mod(idir+1,2)
+        CHF_AUTOID[joff;jdir]
+
+        vel=relativeFrontVel(CHF_AUTOIX[i])
+        
+        if (abs(vel) .lt. epsVel) cycle
+
+        lowerFrac=0.0d0
+        upperFrac=0.0d0
+
+c  Looking for a front when ice is flowing in the negative direction. A front can lie on either the lower face, upper face or mid cell.
+        if ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &         (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac)) then
+           lowerFrac=0.0d0
+           upperFrac=0.0d0
+           if (vel .gt. 0.0d0) then
+c             Retreating front
+              if (oldFrac(CHF_AUTOIX[i]) .gt. epsFrac) then
+                 upperFrac=1.0d0
+              endif
+            elseif (vel .lt. 0.0d0) then
+c             Advancing front
+              if (oldFrac(CHF_AUTOIX[i]) .lt. (1.0d0-epsFrac)) then
+                 upperFrac=1.0d0
+              endif
+           endif
+
+c  Looking for a front when ice is flowing in the positive direction. 
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &         (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac)) then
+           lowerFrac=0.0d0
+           upperFrac=0.0d0
+           if (vel .lt. 0.0d0) then
+c             Retreating front
+              if (oldFrac(CHF_AUTOIX[i]) .gt. epsFrac) then
+                 lowerFrac=1.0d0
+              endif
+           elseif (vel .gt. 0.0d0) then
+c             Advancing front
+              if (oldFrac(CHF_AUTOIX[i]) .lt. (1.0d0-epsFrac)) then
+                 lowerFrac=1.0d0
+              endif
+           endif
+
+c  Look for a front in the orthogonal direction. 
+        elseif (((abs(oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac) .and.
+     &         (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac)) .or.
+     &         ((abs(oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac) .and.
+     &         (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac))) then
+
+
+c      Partial cell...
+           if ((abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) .and.
+     &          (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .gt. epsFrac)) then
+
+c      Allow front in a partial cell to advect by upwinding...
+              if (vel .lt. 0.0d0) then
+                 lowerFrac=oldFrac(CHF_AUTOIX[i])
+                 upperFrac=oldFrac(CHF_OFFSETIX[i;+ioff])
+              elseif (vel .gt. 0.0d0) then
+                 lowerFrac=oldFrac(CHF_OFFSETIX[i;-ioff])
+                 upperFrac=oldFrac(CHF_AUTOIX[i])
+              endif
+
+c      ... is surrounded by a full one and a partial one. Use central differences .
+              if ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &             ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) .and.
+     &             (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac))) then
+                 lowerFrac=0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;-ioff]))
+                 upperFrac=1.0d0
+              elseif ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &             ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and.
+     &             (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac))) then
+                 lowerFrac=1.0d0
+                 upperFrac=0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;+ioff]))
+
+c       ... is surrounded by an empty one and a partial one. Use central differences  
+              elseif ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &             ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and.
+     &             (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac))) then
+                 lowerFrac=0.0d0
+                 upperFrac=0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;+ioff]))
+
+              elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &             ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) .and.
+     &             (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac))) then
+                 lowerFrac=0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;-ioff]))
+                 upperFrac=0.0d0
+              endif
+
+c  Allow front to advance or advect into an empty cell
+           elseif (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if (vel .lt. 0.0d0) then
+                 if (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) then
+                    lowerFrac=0.0d0
+                    upperFrac=1.0d0
+                 elseif (relativeFrontVel(CHF_OFFSETIX[i;+ioff]) .lt. -epsVel) then
+                    lowerFrac=0.0d0
+                    upperFrac=oldFrac(CHF_OFFSETIX[i;+ioff])
+                 endif
+              elseif (vel .gt. 0.0d0) then
+                 if (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) then
+                    lowerFrac=1.0d0
+                    upperFrac=0.0d0
+                 elseif (relativeFrontVel(CHF_OFFSETIX[i;-ioff]) .gt. epsVel) then
+                    lowerFrac=oldFrac(CHF_OFFSETIX[i;-ioff])
+                    upperFrac=0.0d0
+                 endif
+              endif
+
+c  Allow front to retreat into a full cell
+           elseif (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+
+              if (vel .lt. 0.0d0) then
+                 if (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) then
+                    lowerFrac=1.0d0
+                    upperFrac=0.0d0
+                 endif
+              elseif (vel .gt. 0.0d0) then
+                 if (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) then
+                    lowerFrac=0.0d0
+                    upperFrac=1.0d0
+                 endif
+              endif
+
+           endif
+ 
+c Full cell oneside partial cell the other not in direct contact with a front
+        elseif ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &         ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) .and.
+     &         (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac))) then
+
+c      Partial cell...
+           if ((abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) .and.
+     &          (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .gt. epsFrac)) then
+
+              lowerFrac=0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;-ioff]))
+              upperFrac=1.0d0
+
+c      Empty cell.
+           elseif (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if (vel .lt. 0.0d0) then
+                 lowerFrac=0.0d0
+                 upperFrac=1.0d0
+              endif
+
+           endif
+
+        elseif ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &         ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and.
+     &         (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac))) then
+
+c      Partial cell...
+           if ((abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) .and.
+     &          (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .gt. epsFrac)) then
+
+              lowerFrac=1.0d0
+              upperFrac=0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;+ioff]))
+
+c      Empty cell.
+           elseif (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if (vel .gt. 0.0d0) then
+                 lowerFrac=1.0d0
+                 upperFrac=0.0d0
+              endif 
+           endif
+
+c Partial cell oneside empty cell the other
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &         ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and.
+     &         (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac))) then
+
+c      Partial cell...
+           if ((abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) .and.
+     &          (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .gt. epsFrac)) then
+              lowerFrac=0.0d0
+              upperFrac=0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;+ioff]))
+
+c      Empty cell
+           elseif (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if ((vel .lt. -epsVel) .and. 
+     &             (relativeFrontVel(CHF_OFFSETIX[i;+ioff]) .lt. -epsVel)) then
+                 if ((abs(oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac) .or.
+     &                (abs(oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac)) then
+                    lowerFrac=0.0d0
+                    upperFrac=oldFrac(CHF_OFFSETIX[i;+ioff])
+                 endif
+              endif
+c      Full cell
+           elseif (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if (vel .gt. 0.0d0) then
+                 lowerFrac=0.0d0
+                 upperFrac=1.0d0
+              endif
+           endif
+
+c Partial cell oneside empty cell the other
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &         ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) .and.
+     &         (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac))) then
+
+c      Partial cell...
+           if ((abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) .and.
+     &          (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .gt. epsFrac)) then
+              lowerFrac=0.5d0*(oldFrac(CHF_AUTOIX[i])+oldFrac(CHF_OFFSETIX[i;-ioff]))
+              upperFrac=0.0d0
+
+c      Empty cell
+           elseif (abs(oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if ((vel .gt. epsVel) .and. 
+     &             (relativeFrontVel(CHF_OFFSETIX[i;-ioff]) .gt. epsVel)) then
+                 if ((abs(oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac) .or.
+     &                (abs(oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac)) then
+                    lowerFrac=oldFrac(CHF_OFFSETIX[i;-ioff])
+                    upperFrac=0.0d0
+                 endif
+              endif
+c      Full cell
+           elseif (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .lt. epsFrac) then
+              if (vel .lt. 0.0d0) then
+                 lowerFrac=1.0d0
+                 upperFrac=0.0d0
+              endif
+           endif
+
+c Partial cell either side
+        elseif (((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac) .and.
+     &         (abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .gt. epsFrac)) .and.
+     &         ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac) .and.
+     &         (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .gt. epsFrac))) then
+
+c    Partial cell...
+           if ((abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) .and.
+     &          (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .gt. epsFrac)) then
+c    ...upwind...
+              if (vel .lt. 0.0d0) then
+                 lowerFrac=oldFrac(CHF_AUTOIX[i])
+                 upperFrac=oldFrac(CHF_OFFSETIX[i;+ioff])
+              elseif (vel .gt. 0.0d0) then
+                 lowerFrac=oldFrac(CHF_OFFSETIX[i;-ioff])
+                 upperFrac=oldFrac(CHF_AUTOIX[i])
+              endif
+
+           endif
+
+c Full cell either side
+        elseif ((abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &         (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac)) then
+
+           if (abs(1.0d0-oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) then
+           
+              if (vel .lt. 0.0d0) then
+                 lowerFrac=oldFrac(CHF_AUTOIX[i])
+                 upperFrac=1.0d0
+              elseif (vel .gt. 0.0d0) then
+                 lowerFrac=1.0d0
+                 upperFrac=oldFrac(CHF_AUTOIX[i])
+              endif
+
+           endif
+
+c Empty cell either side
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &         (abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac)) then
+
+           if (abs(oldFrac(CHF_AUTOIX[i])) .gt. epsFrac) then
+           
+              if (vel .lt. 0.0d0) then
+                 lowerFrac=oldFrac(CHF_AUTOIX[i])
+                 upperFrac=0.0d0
+              elseif (vel .gt. 0.0d0) then
+                 lowerFrac=0.0d0
+                 upperFrac=oldFrac(CHF_AUTOIX[i])
+              endif
+
+           endif
+
+        endif
+              
+        frac(CHF_AUTOIX[i]) = frac(CHF_AUTOIX[i]) 
+     &                    - factor*vel*(upperFrac-lowerFrac)
+
+        if (abs(vel*factor) .gt. 0.9d0) then
+           write(*,*) "CFL violation at", CHF_AUTOIX[i], vel*factor 
+        endif
+
+      CHF_ENDDO
+      return
+      end
+
+c------------------------------------------------------------------
+      subroutine ADVECTFRACSIMPLE(CHF_FRA1[frac],
+     &                      CHF_CONST_FRA1[oldFrac],    
+     &                      CHF_CONST_FRA1[relativeFrontVel],
+     &                      CHF_CONST_REAL[dx],
+     &                      CHF_CONST_REAL[dt],
+     &                      CHF_CONST_REAL[epsFrac],
+     &                      CHF_CONST_REAL[epsVel],
+     &                      CHF_BOX[box],
+     &                      CHF_CONST_INT[idir])
+      
+
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      integer jdir
+      REAL_T factor
+      REAL_T vel
+      REAL_T lowerFrac, upperFrac
+
+c  this assumes 2d and dx == dy
+      factor = dt/dx
+
+      CHF_AUTOMULTIDO[box; i]
+
+        CHF_AUTOID[ioff;idir]
+
+        jdir=mod(idir+1,2)
+        CHF_AUTOID[joff;jdir]
+
+        vel=relativeFrontVel(CHF_AUTOIX[i])
+        
+        if (abs(vel) .lt. epsVel) cycle
+
+        lowerFrac=0.0d0
+        upperFrac=0.0d0
+
+c  Looking for a front when ice is flowing in the negative direction. A front can lie on either the lower face, upper face or mid cell.
+        if ((abs(oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) .and.
+     &         (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac)) then
+           lowerFrac=0.0d0
+           upperFrac=0.0d0
+           if (vel .gt. 0.0d0) then
+c             Retreating front
+              if (oldFrac(CHF_AUTOIX[i]) .gt. epsFrac) then
+                 upperFrac=1.0d0
+              endif
+            elseif (vel .lt. 0.0d0) then
+c             Advancing front
+              if (oldFrac(CHF_AUTOIX[i]) .lt. (1.0d0-epsFrac)) then
+                 upperFrac=1.0d0
+              endif
+           endif
+
+c  Looking for a front when ice is flowing in the positive direction. 
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) .and.
+     &         (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac)) then
+           lowerFrac=0.0d0
+           upperFrac=0.0d0
+           if (vel .lt. 0.0d0) then
+c             Retreating front
+              if (oldFrac(CHF_AUTOIX[i]) .gt. epsFrac) then
+                 lowerFrac=1.0d0
+              endif
+           elseif (vel .gt. 0.0d0) then
+c             Advancing front
+              if (oldFrac(CHF_AUTOIX[i]) .lt. (1.0d0-epsFrac)) then
+                 lowerFrac=1.0d0
+              endif
+           endif
+
+c  Looking for a front when ice is flowing in the negative direction. A front can lie on either the lower face, upper face or mid cell.
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac) .and.
+     &         (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac)) then
+
+           if (vel .lt. 0.0d0) then
+              lowerFrac=oldFrac(CHF_AUTOIX[i])
+              upperFrac=oldFrac(CHF_OFFSETIX[i;+ioff])
+           elseif (vel .gt. 0.0d0) then
+              lowerFrac=oldFrac(CHF_OFFSETIX[i;-ioff])
+              upperFrac=oldFrac(CHF_AUTOIX[i])
+           endif
+
+c  Looking for a front when ice is flowing in the positive direction. 
+        elseif ((abs(oldFrac(CHF_OFFSETIX[i;+joff])) .lt. epsFrac) .and.
+     &         (abs(1.0d0-oldFrac(CHF_OFFSETIX[i;-joff])) .lt. epsFrac)) then
+
+           if (vel .lt. 0.0d0) then
+              lowerFrac=oldFrac(CHF_AUTOIX[i])
+              upperFrac=oldFrac(CHF_OFFSETIX[i;+ioff])
+           elseif (vel .gt. 0.0d0) then
+              lowerFrac=oldFrac(CHF_OFFSETIX[i;-ioff])
+              upperFrac=oldFrac(CHF_AUTOIX[i])
+           endif
+
+        endif
+              
+        frac(CHF_AUTOIX[i]) = frac(CHF_AUTOIX[i]) 
+     &                    - factor*vel*(upperFrac-lowerFrac)
+
+        if (abs(vel*factor) .gt. 0.9d0) then
+           write(*,*) "CFL violation at", CHF_AUTOIX[i], vel*factor 
+        endif
+
+      CHF_ENDDO
+      return
+      end
+
+c -------------------------------------------------------------
+c Spread 'excess' frac in direction of relative frontal velocity
+c Iterative process in 2d.
+c
+c  INPUTS/OUTPUTS:
+c  frac            <=> ice fraction mask between 0 (no ice) and 1 (fully-covered)
+c  oldFrac          => copy of ice fraction mask before advection (reference)
+c  copyFrac         => copy of ice fraction mask used to locate the front
+c  effThck         <=> effective (actual) thickness of boundary cells
+c  preserveEffThck  => update effective thickness? 1 (yes), 0 (no)
+c  relativeFrontVel => relative velocity at the ice front
+c  epsFrac          => threshold for determining full or empty cell.  
+c  epsVel           => threshold for determining zero speed.
+c  iStep            => current time iteration
+c  icount           => current iteration
+c  iOutofRange     <=  is frac outside 0 or 1. 
+c  box              => subregion over which to update mask
+c -------------------------------------------------------------
+      subroutine GETFRAC(CHF_FRA1[frac],
+     &                      CHF_CONST_FRA1[oldFrac],    
+     &                      CHF_CONST_FRA1[copyFrac],
+     &                      CHF_FRA1[effThck],
+     &                      CHF_CONST_INT[preserveEffThck],
+     &                      CHF_CONST_FRA[relativeVel],
+     &                      CHF_CONST_REAL[epsFrac],
+     &                      CHF_CONST_REAL[epsVel],
+     &                      CHF_CONST_INT[iStep],
+     &                      CHF_CONST_INT[icount],
+     &                      CHF_INT[iOutofRange],
+     &                      CHF_CONST_INT[lev],
+     &                      CHF_CONST_INT[MaxIter],
+     &                      CHF_BOX[box])
+      
+
+      integer CHF_AUTODECL[i], CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      integer idir, ncomp, idx(CH_SPACEDIM)
+      integer in(CH_SPACEDIM),ie(CH_SPACEDIM),is(CH_SPACEDIM),iw(CH_SPACEDIM)
+      integer iprint
+      REAL_T excess
+      REAL_T u, v, speed, uWeight, vWeight
+      REAL_T saveEffThck
+
+      ncomp = CHF_NCOMP[relativeVel]
+      idx = 0
+      ioutOfRange=0
+
+      CHF_AUTOMULTIDO[box; i]
+
+        in=0
+        is=0
+        ie=0
+        iw=0
+        idx(1:ncomp)=(/ CHF_AUTOIX[i] /)
+        iprint=0
+           
+        CHF_AUTOID[ioff;0]
+        CHF_AUTOID[joff;1]
+        
+        saveEffThck = effThck(CHF_AUTOIX[i])
+
+c Limit frac to between 0 and 1
+        if (copyFrac(CHF_AUTOIX[i]) .gt. 1.0d0) then
+           excess=(copyFrac(CHF_AUTOIX[i])-1.0d0)
+        elseif (copyFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+           excess=copyFrac(CHF_AUTOIX[i])
+        else
+           excess=0.0d0
+        endif
+        if (abs(excess) .gt. epsFrac) then
+           u=relativeVel(CHF_AUTOIX[i],0)
+           v=relativeVel(CHF_AUTOIX[i],1)
+           speed=dsqrt(u*u+v*v)
+           if (speed .lt. epsVel) then
+c iceFrac may go out of range near a corner between a calving front and spreading grounded ice, for example. 
+              iprint=1
+           endif
+        endif
+        frac(CHF_AUTOIX[i]) = frac(CHF_AUTOIX[i])-excess
+
+c Receive excess frac from a neighbouring cell
+        if ((copyFrac(CHF_OFFSETIX[i;+ioff]) .gt. 1.0d0) .or.
+     &          (copyFrac(CHF_OFFSETIX[i;+ioff]) .lt. 0.0d0)) then
+           u=relativeVel(CHF_OFFSETIX[i;+ioff],0)
+           if (u .lt. -epsVel) then
+              v=relativeVel(CHF_OFFSETIX[i;+ioff],1)
+              uWeight=abs(u)/(abs(u)+abs(v))
+              if (copyFrac(CHF_OFFSETIX[i;+ioff]) .gt. 1.0d0) then
+                 excess=copyFrac(CHF_OFFSETIX[i;+ioff])-1.0d0
+                 if (copyFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;+ioff])
+                 endif
+              else
+                 excess=copyFrac(CHF_OFFSETIX[i;+ioff])
+              endif
+              frac(CHF_AUTOIX[i])=frac(CHF_AUTOIX[i])+excess*uWeight
+           endif
+        endif
+
+        if ((copyFrac(CHF_OFFSETIX[i;-ioff]) .gt. 1.0d0) .or.
+     &          (copyFrac(CHF_OFFSETIX[i;-ioff]) .lt. 0.0d0)) then
+           u=relativeVel(CHF_OFFSETIX[i;-ioff],0)
+           if (u .gt. epsVel) then
+              v=relativeVel(CHF_OFFSETIX[i;-ioff],1)
+              uWeight=abs(u)/(abs(u)+abs(v))
+              if (copyFrac(CHF_OFFSETIX[i;-ioff]) .gt. 1.0d0) then
+                 excess=copyFrac(CHF_OFFSETIX[i;-ioff])-1.0d0
+                 if (copyFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;-ioff])
+                 endif
+              else
+                 excess=copyFrac(CHF_OFFSETIX[i;-ioff])
+              endif
+              frac(CHF_AUTOIX[i])=frac(CHF_AUTOIX[i])+excess*uWeight
+           endif
+        endif
+
+        if ((copyFrac(CHF_OFFSETIX[i;+joff]) .gt. 1.0d0) .or.
+     &          (copyFrac(CHF_OFFSETIX[i;+joff]) .lt. 0.0d0)) then
+           v=relativeVel(CHF_OFFSETIX[i;+joff],1)
+           if (v .lt. -epsVel) then
+              u=relativeVel(CHF_OFFSETIX[i;+joff],0)
+              vWeight=abs(v)/(abs(u)+abs(v))
+              if (copyFrac(CHF_OFFSETIX[i;+joff]) .gt. 1.0d0) then
+                 excess=copyFrac(CHF_OFFSETIX[i;+joff])-1.0d0
+                 if (copyFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;+joff])
+                 endif
+              else
+                 excess=copyFrac(CHF_OFFSETIX[i;+joff])
+              endif
+              frac(CHF_AUTOIX[i])=frac(CHF_AUTOIX[i])+excess*vWeight
+           endif
+        endif
+
+        if ((copyFrac(CHF_OFFSETIX[i;-joff]) .gt. 1.0d0) .or.
+     &          (copyFrac(CHF_OFFSETIX[i;-joff]) .lt. 0.0d0)) then
+           v=relativeVel(CHF_OFFSETIX[i;-joff],1)
+           if (v .gt. epsVel) then
+              u=relativeVel(CHF_OFFSETIX[i;-joff],0)
+              vWeight=abs(v)/(abs(u)+abs(v))
+              if (copyFrac(CHF_OFFSETIX[i;-joff]) .gt. 1.0d0) then
+                 excess=copyFrac(CHF_OFFSETIX[i;-joff])-1.0d0
+                 if (copyFrac(CHF_AUTOIX[i]) .lt. epsFrac) then
+                    effThck(CHF_AUTOIX[i])=effThck(CHF_OFFSETIX[i;-joff])
+                 endif
+              else
+                 excess=copyFrac(CHF_OFFSETIX[i;-joff])
+              endif
+              frac(CHF_AUTOIX[i])=frac(CHF_AUTOIX[i])+excess*vWeight
+           endif
+        endif
+
+        if ((frac(CHF_AUTOIX[i]) .gt. (1.0d0+epsFrac)) .or. 
+     &     (frac(CHF_AUTOIX[i]) .lt. -epsVel)) then
+
+           iOutOfRange=1
+
+           if ((icount .eq. (MaxIter-1)) .or. (iprint .eq. 1)) then
+
+              in(1:ncomp)=(/ CHF_OFFSETIX[i;+joff] /)
+              ie(1:ncomp)=(/ CHF_OFFSETIX[i;+ioff] /)
+              is(1:ncomp)=(/ CHF_OFFSETIX[i;-joff] /)
+              iw(1:ncomp)=(/ CHF_OFFSETIX[i;-ioff] /)
+
+c$$$              write(*,*) "Out: Ice Fraction out of range", CHF_AUTOIX[i], iStep, icount
+c$$$              write(*,*) "Out: Ice Fraction out of range lev      ",  lev
+c$$$              write(*,*) "Out: new frac"
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Out: ", frac(iw(1),in(2)), 
+c$$$     &               frac(CHF_OFFSETIX[i;+joff]), frac(ie(1),in(2))
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Out: ", frac(CHF_OFFSETIX[i;-ioff]), 
+c$$$     &               frac(CHF_AUTOIX[i]), frac(CHF_OFFSETIX[i;+ioff])
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Out: ", frac(iw(1),is(2)), 
+c$$$     &               frac(CHF_OFFSETIX[i;-joff]), frac(ie(1),is(2))
+c$$$              write(*,*) "Out: old frac"
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Out: ", oldFrac(iw(1),in(2)), 
+c$$$     &               oldFrac(CHF_OFFSETIX[i;+joff]), oldFrac(ie(1),in(2))
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Out: ", oldFrac(CHF_OFFSETIX[i;-ioff]), 
+c$$$     &               oldFrac(CHF_AUTOIX[i]), oldFrac(CHF_OFFSETIX[i;+ioff])
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Out: ", oldFrac(iw(1),is(2)), 
+c$$$     &               oldFrac(CHF_OFFSETIX[i;-joff]), oldFrac(ie(1),is(2))
+c$$$              write(*,*) "Out: copy frac"
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Out: ", copyFrac(iw(1),in(2)), 
+c$$$     &               copyFrac(CHF_OFFSETIX[i;+joff]), copyFrac(ie(1),in(2))
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Out: ", copyFrac(CHF_OFFSETIX[i;-ioff]), 
+c$$$     &               copyFrac(CHF_AUTOIX[i]), copyFrac(CHF_OFFSETIX[i;+ioff])
+c$$$              write(*,'(A,F10.5,F10.5,F10.5)') "Out: ", copyFrac(iw(1),is(2)), 
+c$$$     &               copyFrac(CHF_OFFSETIX[i;-joff]), copyFrac(ie(1),is(2))
+c$$$              write(*,*) "Out: u relative velocity"
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Out: ", relativeVel(iw(1),in(2),0), 
+c$$$     &               relativeVel(CHF_OFFSETIX[i;+joff],0), relativeVel(ie(1),in(2),0)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Out: ", relativeVel(CHF_OFFSETIX[i;-ioff],0), 
+c$$$     &               relativeVel(CHF_AUTOIX[i],0), relativeVel(CHF_OFFSETIX[i;+ioff],0)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Out: ", relativeVel(iw(1),is(2),0), 
+c$$$     &               relativeVel(CHF_OFFSETIX[i;-joff],0), relativeVel(ie(1),is(2),0)
+c$$$              write(*,*) "Out: v relative velocity"
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Out: ", relativeVel(iw(1),in(2),1), 
+c$$$     &               relativeVel(CHF_OFFSETIX[i;+joff],1), relativeVel(ie(1),in(2),1)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Out: ", relativeVel(CHF_OFFSETIX[i;-ioff],1), 
+c$$$     &               relativeVel(CHF_AUTOIX[i],1), relativeVel(CHF_OFFSETIX[i;+ioff],1)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "Out: ", relativeVel(iw(1),is(2),1), 
+c$$$     &               relativeVel(CHF_OFFSETIX[i;-joff],1), relativeVel(ie(1),is(2),1)
+            if (icount .eq. (MaxIter-1)) then
+              if (frac(CHF_AUTOIX[i]) .gt. (1.0d0+epsFrac)) then 
+                 frac(CHF_AUTOIX[i])=1.0d0
+              elseif (frac(CHF_AUTOIX[i]) .lt. -epsVel) then
+                 frac(CHF_AUTOIX[i])=0.0d0
+              endif
+            end if
+
+           endif
+        endif
+        
+        if (preserveEffThck .eq. 0) then
+           effThck(CHF_AUTOIX[i]) = saveEffThck
+        endif
+
+      CHF_ENDDO
+
+      return
+      end
+
+c-----------------------------------------------------------------------
+      subroutine ISOLATEDFRAC(CHF_FRA1[frac],
+     &                      CHF_CONST_FRA1[oldFrac],    
+     &                      CHF_CONST_FRA[relativeVel],
+     &                      CHF_CONST_INT[iStep],
+     &                      CHF_CONST_INT[lev],
+     &                      CHF_BOX[box])
+      
+
+      integer CHF_AUTODECL[i], CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      integer ncomp, idir
+
+      integer nSheet(2), nOcean(2)
+      integer ii, iprint
+      integer in(3),ie(3),is(3),iw(3)
+      REAL_T epsFrac
+
+      epsFrac = 1.0d-8
+
+      ncomp = CHF_NCOMP[relativeVel]
+
+      in=0
+      is=0
+      ie=0
+      iw=0
+
+      CHF_AUTOMULTIDO[box; i]
+
+        nSheet = 0
+        nOcean = 0
+        iprint = 0
+
+        if ((frac(CHF_AUTOIX[i]) .lt. (1.0d0-epsFrac)) .and. (frac(CHF_AUTOIX[i]) .gt. epsFrac)) then
+           do idir = 0, CH_SPACEDIM-1
+
+              CHF_AUTOID[ioff;idir]
+              ii= idir+1
+
+              if (frac(CHF_OFFSETIX[i;+ioff]) .gt. (1.0d0-epsFrac)) then
+                 nSheet(ii) = nSheet(ii) + 1
+              elseif (abs(frac(CHF_OFFSETIX[i;+ioff])) .lt. epsFrac) then
+                 nOcean(ii) = nOcean(ii) + 1
+              endif
+              if (frac(CHF_OFFSETIX[i;-ioff]) .gt. (1.0d0-epsFrac)) then
+                 nSheet(ii) = nSheet(ii) + 1
+              elseif (abs(frac(CHF_OFFSETIX[i;-ioff])) .lt. epsFrac) then
+                 nOcean(ii) = nOcean(ii) + 1
+              endif
+
+           enddo
+
+           if (sum(nOcean) .eq. 0) then
+              if (sum(nSheet) .ge. 3) then
+                 frac(CHF_AUTOIX[i])=1.0d0 
+                 iprint=1 
+              elseif ((nSheet(1) .eq. 2) .or. (nSheet(2) .eq. 2)) then
+                 frac(CHF_AUTOIX[i])=1.0d0
+                 iprint=1 
+              endif
+           endif
+           if (sum(nSheet) .eq. 0) then
+              if (sum(nOcean) .ge. 3) then
+                 frac(CHF_AUTOIX[i])=0.0d0 
+                 iprint=1 
+              elseif ((nOcean(1) .eq. 2) .or. (nOcean(2) .eq. 2)) then 
+                 frac(CHF_AUTOIX[i])=0.0d0
+                 iprint=1 
+              endif
+           endif
+
+c$$$           if (iprint .eq. 1) then
+c$$$
+c$$$              write(*,*) "iceFrac: Isolated iceFrac at", CHF_AUTODECL[i], iStep
+c$$$
+c$$$              CHF_AUTOID[ioff;0]
+c$$$              CHF_AUTOID[joff;1]
+c$$$
+c$$$              in(1:ncomp)=(/ CHF_OFFSETIX[i;+joff] /)
+c$$$              ie(1:ncomp)=(/ CHF_OFFSETIX[i;+ioff] /)
+c$$$              is(1:ncomp)=(/ CHF_OFFSETIX[i;-joff] /)
+c$$$              iw(1:ncomp)=(/ CHF_OFFSETIX[i;-ioff] /)
+c$$$              write(*,*) "iceFrac: top corners   ", iw(1),in(2), "      ", ie(1),in(2)
+c$$$              write(*,*) "iceFrac: bottom corners", iw(1),is(2), "      ", ie(1),is(2)
+c$$$
+c$$$              write(*,*) "iceFrac: new frac... lev", lev
+c$$$              write(*,'(A,F15.10,F15.10,F15.10)') "iceFrac: ", frac(iw(1),in(2)), 
+c$$$     &               frac(CHF_OFFSETIX[i;+joff]), frac(ie(1),in(2))
+c$$$              write(*,'(A,F15.10,F15.10,F15.10)') "iceFrac: ", frac(CHF_OFFSETIX[i;-ioff]), 
+c$$$     &               frac(CHF_AUTOIX[i]), frac(CHF_OFFSETIX[i;+ioff])
+c$$$              write(*,'(A,F15.10,F15.10,F15.10)') "iceFrac: ", frac(iw(1),is(2)), 
+c$$$     &               frac(CHF_OFFSETIX[i;-joff]), frac(ie(1),is(2))
+c$$$              write(*,*) "iceFrac: old frac"
+c$$$              write(*,'(A,F15.10,F15.10,F15.10)') "iceFrac: ", oldFrac(iw(1),in(2)), 
+c$$$     &               oldFrac(CHF_OFFSETIX[i;+joff]), oldFrac(ie(1),in(2))
+c$$$              write(*,'(A,F15.10,F15.10,F15.10)') "iceFrac: ", oldFrac(CHF_OFFSETIX[i;-ioff]), 
+c$$$     &               oldFrac(CHF_AUTOIX[i]), oldFrac(CHF_OFFSETIX[i;+ioff])
+c$$$              write(*,'(A,F15.10,F15.10,F15.10)') "iceFrac: ", oldFrac(iw(1),is(2)), 
+c$$$     &               oldFrac(CHF_OFFSETIX[i;-joff]), oldFrac(ie(1),is(2))
+c$$$              write(*,*) "iceFrac: u relative velocity"
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "iceFrac: ", relativeVel(iw(1),in(2),0), 
+c$$$     &               relativeVel(CHF_OFFSETIX[i;+joff],0), relativeVel(ie(1),in(2),0)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "iceFrac: ", relativeVel(CHF_OFFSETIX[i;-ioff],0), 
+c$$$     &               relativeVel(CHF_AUTOIX[i],0), relativeVel(CHF_OFFSETIX[i;+ioff],0)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "iceFrac: ", relativeVel(iw(1),is(2),0), 
+c$$$     &               relativeVel(CHF_OFFSETIX[i;-joff],0), relativeVel(ie(1),is(2),0)
+c$$$              write(*,*) "iceFrac: v relative velocity"
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "iceFrac: ", relativeVel(iw(1),in(2),1), 
+c$$$     &               relativeVel(CHF_OFFSETIX[i;+joff],1), relativeVel(ie(1),in(2),1)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "iceFrac: ", relativeVel(CHF_OFFSETIX[i;-ioff],1), 
+c$$$     &               relativeVel(CHF_AUTOIX[i],1), relativeVel(CHF_OFFSETIX[i;+ioff],1)
+c$$$              write(*,'(A,F15.5,F15.5,F15.5)') "iceFrac: ", relativeVel(iw(1),is(2),1), 
+c$$$     &               relativeVel(CHF_OFFSETIX[i;-joff],1), relativeVel(ie(1),is(2),1)
+c$$$
+c$$$ 
+c$$$           endif
+        endif
+
+      CHF_ENDDO
+
+      return
+      end
+
+
+      
+
       
       subroutine COMPUTEZVEL(CHF_FRA[uz],
      &     CHF_FRA1[uzs],
@@ -790,152 +3117,3 @@ c----------------------------------------------------
 
       return
       end
-
-      
- 
-c -------------------------------------------------------------
-c compute "area advection" of real-valued ice mask
-c Basic idea is that in the absence of calving, etc, a calving front
-c will advance at the speed of the ice
-c 
-c     INPUTS/OUTPUTS:
-c  dmask        <=> change to mask accumulated over the timestep
-c  mask          => ice mask between 0 (no ice) and 1 (fully-covered)
-c  faceVel       => face-centered advection velocity
-c  dx            => cell spacing
-c  dt            => timestep
-c  fillThreshold => value above which we declare a cell to be full 
-c                   and set mask to 1.
-c  box           => subregion over which to update mask
-c  idir          => component direction (do this one direction at a time)
-c -------------------------------------------------------------
-      subroutine ADVECTMASKA(CHF_FRA1[dmaska],
-     &     CHF_CONST_FRA1[mask],
-     &     CHF_CONST_FRA1[faceVel],
-     &     CHF_REAL[dx],
-     &     CHF_REAL[dt],
-     &     CHF_REAL[full],
-     &     CHF_BOX[box],
-     &     CHF_INT[idir])
-      
-
-      integer CHF_AUTODECL[i]
-      integer CHF_AUTODECL[ioff]
-      REAL_T factor
-
-c  this assumes 2d and dx == dy
-      factor = dt/dx
-      
-      CHF_DTERM[
-      ioff0 = CHF_ID(0,idir);
-      ioff1 = CHF_ID(1,idir);
-      ioff2 = CHF_ID(2,idir)]
-      
-      CHF_AUTOMULTIDO[box; i]
-
-      
-c     lower side
-         if ((faceVel(CHF_AUTOIX[i]) .gt. zero)
-     &        .and.(mask(CHF_OFFSETIX[i;-ioff]) .gt. full)) then
-            dmaska(CHF_AUTOIX[i]) = dmaska(CHF_AUTOIX[i]) 
-     &           + factor*faceVel(CHF_AUTOIX[i])
-         endif
-         
-c     upper side
-         if ((faceVel(CHF_OFFSETIX[i;+ioff]) .lt. zero)
-     &        .and.(mask(CHF_OFFSETIX[i;+ioff]) .gt. full)) then 
-            dmaska(CHF_AUTOIX[i]) = dmaska(CHF_AUTOIX[i]) 
-     &           - factor*faceVel(CHF_OFFSETIX[i;+ioff]) 
-         endif
-
-
-      CHF_ENDDO
-      return
-      end
-
-c -------------------------------------------------------------
-c Compute "area advection" of real-valued non-ice mask
-c Basic idea is that given a calving rate *vector*,
-c the front retreats at a known rate. designed to complement
-c ADVECTMASKA above. Could be combined with it      
-c 
-c     INPUTS/OUTPUTS:
-c     dmaskc      <=> change to mask due to calving accumlated over the timestep
-c     mask       => ice mask between 0 (no ice) and 1 (fully-covered)
-c     dmaska     => update to mask due to ice advection  
-c  faceVel       => face-centered advection velocity
-c  dx            => cell spacing
-c  dt            => timestep
-c  fillThreshold => value above which we declare a cell to be full 
-c                   and set mask to 1.
-c  box           => subregion over which to update mask
-c  idir          => component direction (do this one direction at a time)
-c -------------------------------------------------------------
-      subroutine ADVECTMASKC(CHF_FRA1[dmaskc],
-     &     CHF_CONST_FRA1[mask],
-     &     CHF_CONST_FRA1[dmaska],
-     &     CHF_CONST_FRA1[faceVel],
-     &     CHF_REAL[dx],
-     &     CHF_REAL[dt],
-     &     CHF_REAL[empty],
-     &     CHF_BOX[box],
-     &     CHF_INT[idir])
-      
-
-      integer CHF_AUTODECL[i]
-      integer CHF_AUTODECL[ioff]
-      REAL_T factor
-      logical front
-
-c  this assumes 2d and dx == dy
-      factor = dt/dx
-
-
-      CHF_DTERM[
-      ioff0 = CHF_ID(0,idir);
-      ioff1 = CHF_ID(1,idir);
-      ioff2 = CHF_ID(2,idir)]
-      
-      CHF_AUTOMULTIDO[box; i]
-
-c     outer condition limits calving to cells that contain
-c     ice at the start or at the end of the time-step
-      if ((mask(CHF_AUTOIX[i]) .gt. empty) .or.
-     &     (mask(CHF_AUTOIX[i]) + dmaska(CHF_AUTOIX[i]) .gt. empty))
-     &     then
-         
-c     ocean on the lower side, so that the relevant face velocity
-c     is on the upper side (to match advance in ADVECTMASKA)
-         if ((faceVel(CHF_OFFSETIX[i;+ioff]) .gt. zero)
-     &        .and.(mask(CHF_OFFSETIX[i;-ioff]) .lt. empty)) then
-            dmaskc(CHF_AUTOIX[i]) = dmaskc(CHF_AUTOIX[i]) 
-     &           - factor*faceVel(CHF_OFFSETIX[i;+ioff])
-         endif
-         
-c     ocean on the upper side, so that the relevant face velocity
-c     is on the lower side (to match advance in ADVECTMASKA)  
-         if ((faceVel(CHF_AUTOIX[i]) .lt. zero)
-     &        .and.(mask(CHF_OFFSETIX[i;+ioff]) .lt. empty)) then 
-            dmaskc(CHF_AUTOIX[i]) = dmaskc(CHF_AUTOIX[i]) 
-     &           + factor*faceVel(CHF_AUTOIX[i]) 
-         endif
-      endif
-c$$$  c       lower side
-c$$$  if ((faceVel(CHF_AUTOIX[i]) .gt. zero)
-c$$$  &     .and.(mask(CHF_OFFSETIX[i;-ioff]) .lt. empty)) then
-c$$$  dmask(CHF_AUTOIX[i]) = dmask(CHF_AUTOIX[i]) 
-c$$$     &        - factor*faceVel(CHF_AUTOIX[i])
-c$$$  endif
-c$$$  
-c$$$  c     upper side
-c$$$      if ((faceVel(CHF_OFFSETIX[i;+ioff]) .lt. zero)
-c$$$  &     .and.(mask(CHF_OFFSETIX[i;+ioff]) .lt. empty)) then 
-c$$$  dmask(CHF_AUTOIX[i]) = dmask(CHF_AUTOIX[i]) 
-c$$$     &        + factor*faceVel(CHF_OFFSETIX[i;+ioff]) 
-c$$$      endif
-c$$$      
-
-      CHF_ENDDO
-      return
-      end
-

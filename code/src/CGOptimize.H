@@ -191,8 +191,10 @@ void secantLineSearch
 template <class X>
 int CGOptimize(ObjectiveWithGradient<X>& a_F, X& a_x, 
 		int  a_maxIter, 
+		int  a_minIter, 	//MJT
 		Real a_tol,
 		Real a_hang,
+		Real a_hangLim,		//MJT
 		Real a_secantParameter,
 	        Real a_secantStepMaxGrow,
 	        int  a_secantMaxIter,
@@ -228,13 +230,13 @@ int CGOptimize(ObjectiveWithGradient<X>& a_F, X& a_x,
   int iter = a_iter; int k = 0;
 
   // if we have a_iter > a_maxIter, we have presumably restarted
-  int niter = a_maxIter;
-  if ( (iter > a_maxIter) && (a_maxIter > 0))  niter += (iter/a_maxIter) * a_maxIter;
+  int niter = a_maxIter + (iter/a_maxIter) * a_maxIter;
   
   while ( (iter < niter)
 	  && (deltaNew > sqr(a_tol) * deltaZero) 
 	  && (fm > 1.0e-16) 
-	  && ( (iter - a_iter < 1  ) || (fm/fmOld < a_hang) ) )
+//	  && ( (iter - a_iter < 1  ) || (fm/fmOld < a_hang) ) )								// MJT
+	  && ( (iter - a_iter < 1  ) || ( ( (fm/fmOld < a_hang) || (fm/fmOld > a_hangLim) ) || (iter < a_minIter) ) ) )	// MJT
     {
       
       pout() << "CGOptimize iteration " << iter 

@@ -141,24 +141,7 @@ void readMultiLevelData
  //decompose level 0
  Vector<Box> boxes;
  int maxBoxSize = 64;
- // start with a blockfactor of 8, but reduce if needed
  int blockFactor = 8;
- Box tempBox(domBox);
- tempBox.coarsen(blockFactor);
- tempBox.refine(blockFactor);
- if (domBox != tempBox)
-   {
-     // need to reduce blockFactor
-     bool ok = false;
-     while (!ok)
-       {
-         blockFactor /= 2;
-         tempBox = domBox;
-         tempBox.coarsen(blockFactor);
-         tempBox.refine(blockFactor);
-         if (tempBox == domBox) ok = true;
-       }
-   } 
  domainSplit(domBox, boxes, maxBoxSize, blockFactor);
  Vector<int> procAssign(boxes.size());
  LoadBalance(procAssign,boxes);

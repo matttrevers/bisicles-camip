@@ -101,19 +101,14 @@ computeCCDerivatives(LevelData<FArrayBox>& a_ccDeriv,
     }
 }
 
-/// compute face-centered derivatives of cell-centered data on all faces,
-/**
-   if oneSideFront, compute one sided differences next to zero-thickness regions.
-   Assume two sided versions already computed.
- */
+/// compute face-centered derivatives of cell-centered data on all faces
 void
 computeFCDerivatives(LevelData<FluxBox>& a_fcDeriv,
                      const LevelData<FArrayBox>& a_ccData,
                      const LevelSigmaCS& a_coordSys,
                      const Interval& a_comps,
                      const Interval& a_derivDirections,
-                     const IntVect& a_derivGhost,
-		     bool oneSideMask)
+                     const IntVect& a_derivGhost)
 {
   const RealVect& dx = a_coordSys.dx();
   const LevelData<FluxBox>& levelDeltas = a_coordSys.faceDeltaFactors();
@@ -157,29 +152,14 @@ computeFCDerivatives(LevelData<FluxBox>& a_fcDeriv,
               
               for (int srcComp = a_comps.begin(); srcComp<=a_comps.end(); srcComp++)
                 {
-                  int derivComp = derivComponent(derivDir, srcComp);
-
-		  if (!oneSideMask)
-		    {
-		      FORT_FACEDERIV(CHF_FRA1(fcDeriv,derivComp),
-				     CHF_CONST_FRA1(thisCCdata, srcComp),
-				     CHF_BOX(faceDerivBox),
-				     CHF_CONST_REAL(dx[derivDir]),
-				     CHF_INT(derivDir),
-				     CHF_INT(faceDir));
-		    }
-		  else
-		    {
-		      Real tol = 1.0e-2;
-		      FORT_FACEDERIVONESIDE(CHF_FRA1(fcDeriv,derivComp),
-					    CHF_CONST_FRA1(thisCCdata, srcComp),
-					    CHF_CONST_FRA1(a_coordSys.getH()[dit],0),
-					    CHF_BOX(faceDerivBox),
-					    CHF_CONST_REAL(dx[derivDir]),
-					    CHF_CONST_REAL(tol),
-					    CHF_INT(derivDir),
-					    CHF_INT(faceDir));
-		    }
+                  int derivComp = derivComponent(derivDir, srcComp);          
+                  FORT_FACEDERIV(CHF_FRA1(fcDeriv,derivComp),
+                                 CHF_CONST_FRA1(thisCCdata, srcComp),
+                                 CHF_BOX(faceDerivBox),
+                                 CHF_CONST_REAL(dx[derivDir]),
+                                 CHF_INT(derivDir),
+                                 CHF_INT(faceDir));
+                  
                   if (CH_SPACEDIM == 3)
                     {
                       // take d/d(sigma) terms into account)
@@ -192,8 +172,6 @@ computeFCDerivatives(LevelData<FluxBox>& a_fcDeriv,
         } // end loop over face directions
     } //end loop over boxes
 }
-
-
 
 /// compute face-centered derivatives of cell-centered data
 /** This version takes cell-centered derivatives in the mapped

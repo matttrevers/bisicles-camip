@@ -346,6 +346,86 @@ c-------------------------------------
 
       return
       end
+	  
+c--------------------------------------
+c MJT - 2021-05-18
+c Calculate the shear stress metric S
+c S = (|du/dy.u| + |dvdx.v|)/(|u| + TINY_NORM)
+c This'll be used to prioritise the shear margins in optimising phi
+c-------------------------------------
+      subroutine computeshearmetric(CHF_FRA1[S],
+     &     CHF_CONST_FRA1[u],
+     &     CHF_CONST_FRA1[v],
+     &     CHF_CONST_FRA1[mask],
+     &     CHF_CONST_REAL[dx],
+     &     CHF_BOX[box])
+ 
+
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      REAL_T factor
+      REAL_T dudy, dvdx, umag
+	  
+      CHF_AUTOID[ioff;0]
+      CHF_AUTOID[joff;1]
+	  
+      factor = half/dx
+
+      CHF_AUTOMULTIDO[box; i]
+	  
+      umag = (u(CHF_AUTOIX[i])**two + v(CHF_AUTOIX[i])**two)**half
+	  
+      dudy = factor * (u(CHF_OFFSETIX[i;+joff]) - u(CHF_OFFSETIX[i;-joff]))
+      dvdx = factor * (v(CHF_OFFSETIX[i;+ioff]) - v(CHF_OFFSETIX[i;-ioff]))
+	  
+c      S(CHF_AUTOIX[i]) = abs((dudy*u(CHF_AUTOIX[i]))+(dvdx*v(CHF_AUTOIX[i]))) / (abs(umag) + TINY_NORM)
+c      S(CHF_AUTOIX[i]) = abs(abs(dudy*u(CHF_AUTOIX[i]))+abs(dvdx*v(CHF_AUTOIX[i]))) / (abs(umag) + TINY_NORM)
+      S(CHF_AUTOIX[i]) = abs(dudy)+abs(dvdx)
+      S(CHF_AUTOIX[i]) = S(CHF_AUTOIX[i]) * mask(CHF_AUTOIX[i])
+            
+      CHF_ENDDO
+
+      return
+      end
+	  
+c--------------------------------------
+c MJT - 2021-08-19
+c Calculate the strain rate metric E
+c E = (|du/dx| + |dvdy|)
+c This'll be used to prioritise high strain rates in optimising phi
+c-------------------------------------
+      subroutine computestrainmetric(CHF_FRA1[E],
+     &     CHF_CONST_FRA1[u],
+     &     CHF_CONST_FRA1[v],
+     &     CHF_CONST_FRA1[mask],
+     &     CHF_CONST_REAL[dx],
+     &     CHF_BOX[box])
+ 
+
+      integer CHF_AUTODECL[i]
+      integer CHF_AUTODECL[ioff], CHF_AUTODECL[joff]
+      REAL_T factor
+      REAL_T dudx, dvdy, umag
+	  
+      CHF_AUTOID[ioff;0]
+      CHF_AUTOID[joff;1]
+	  
+      factor = half/dx
+
+      CHF_AUTOMULTIDO[box; i]
+	  
+      umag = (u(CHF_AUTOIX[i])**two + v(CHF_AUTOIX[i])**two)**half
+	  
+      dudx = factor * (u(CHF_OFFSETIX[i;+ioff]) - u(CHF_OFFSETIX[i;-ioff]))
+      dvdy = factor * (v(CHF_OFFSETIX[i;+joff]) - v(CHF_OFFSETIX[i;-joff]))
+	  
+      E(CHF_AUTOIX[i]) = abs(dudx)+abs(dvdy)
+      E(CHF_AUTOIX[i]) = E(CHF_AUTOIX[i]) * mask(CHF_AUTOIX[i])
+            
+      CHF_ENDDO
+
+      return
+      end
 
 c -----------------------------------------------------
 c h <- max(0, min(ho + limit, max( ho - limit )))

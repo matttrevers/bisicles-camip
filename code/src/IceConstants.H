@@ -24,11 +24,6 @@
 #define openlandmaskval (8)
 #define OCEANMASKVAL OPENSEAMASKVAL
 #define oceanmaskval openseamaskval
-#define oceanconnected (1.0)
-#define OCEANCONNECTED (1.0)
-#define oceanisolated (0.0)
-#define OCEANISOLATED (0.0)
-
 
 #if defined(CH_USE_FLOAT) || defined(CH_LANG_CC)
 
@@ -40,8 +35,6 @@
 #define TINY_NORM (1.0e-10)
 #define tiny_thickness (1.0e-2)
 #define TINY_THICKNESS (1.0e-2)
-#define tiny_frac (1.0e-3)
-#define TINY_FRAC (1.0e-3)
 #define huge_thickness (1.0e+4)
 #define HUGE_THICKNESS (1.0e+4)
 #define HUGE_VEL (1.0e+6)
@@ -51,7 +44,6 @@
 #define ICE_DENSITY 918.0
 #define SEA_WATER_DENSITY 1028.0
 #define GRAVITY 9.81
-#define MANTLE_DENSITY 3313.0
 
 #elif defined(CH_USE_DOUBLE) && !defined(CH_LANG_CC)
 
@@ -62,8 +54,6 @@
 #define TINY_NORM (1.0d-10)
 #define tiny_thickness (1.0d-2)
 #define TINY_THICKNESS (1.0d-2)
-#define tiny_frac (1.0d-3)
-#define TINY_FRAC (1.de-3)
 #define huge_thickness (1.0e+4)
 #define HUGE_THICKNESS (1.0e+4)
 #define HUGE_VEL (1.0d+6)

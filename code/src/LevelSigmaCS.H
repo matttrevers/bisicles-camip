@@ -59,18 +59,13 @@ public:
   LevelSigmaCS( const DisjointBoxLayout& a_grids,
 		const RealVect& a_dx,
 		const LevelSigmaCS& a_fineCS, 
-		int a_nRef);
-
-  /// copy constructor
-  LevelSigmaCS(const LevelSigmaCS& a_cs);
-  
+		int a_nRef
+		);
   /**
      Destructor.
    */
   virtual ~LevelSigmaCS();
 
-  
-  
   void define(const DisjointBoxLayout& a_grids,
               const RealVect& a_dx, 
               const IntVect& a_ghostVect = IntVect::Unit);
@@ -191,14 +186,6 @@ public:
   */
   const LevelData<BaseFab<int> >& getFloatingMask() const {return m_floatingMask;}
 
-  /// returns mask specfying cell that are connected to the ocean
-  /**
-     following mask values are defined in IceConstant.H
-     oceanconnected
-     oceanisolated
-   */
-  const LevelData<FArrayBox >& getOceanConnected() const {return m_oceanConnected;}
-  
   /// recomputes quantities which are dependent on cell-centered H. 
   /** Should be called after cell-centered H is modified to ensure 
       that things don't get out of sync. Also computes face-centered H 
@@ -355,16 +342,6 @@ protected:
 
   /// is anything floating?
   LayoutData<bool> m_anyFloating; 
-
-  /// connection to the ocean (or not).
-  /**
-     We define 'connected to the ocean' to 
-     mean that a continous path can be found between 
-     a floating or open ocean cell adjacent to 
-     a domain boundary. 
-   */
-  LevelData<FArrayBox>  m_oceanConnected;
-
   ///
   LevelData<FArrayBox> m_deltaFactors;
 
@@ -399,10 +376,6 @@ protected:
 
   /// sets floating mask based on surface height
   void computeFloatingMask(const LevelData<FArrayBox>& a_surface);
-
-  /// compute ocean
-  void computeOceanConnection(const LevelSigmaCS* a_crseCoords, 
-			      const int a_refRatio);
 
 
 #if BISICLES_Z == BISICLES_LAYERED

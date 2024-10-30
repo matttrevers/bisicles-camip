@@ -694,6 +694,22 @@ void  PythonInterface::FillKwargs(std::map<std::string,Real>& a_kwarg,
 	{
 	  i->second = a_amrIce.groundingLineProximityScale();
 	}
+      else if (i->first == "x_vel")
+	{
+	  i->second = (*a_amrIce.velocity(a_level))[a_dit](a_iv,0);
+	}
+      else if (i->first == "y_vel")
+	{
+	  i->second = (*a_amrIce.velocity(a_level))[a_dit](a_iv,1);
+	}
+      else if (i->first == "dt")
+	{
+	  i->second = a_amrIce.dt();
+	}
+      else if (i->first == "timestep")
+	{
+	  i->second = a_amrIce.current_timestep();
+	}
       else
 	{
 	  i->second = 0.0;
@@ -708,10 +724,10 @@ void PythonInterface::PythonSurfaceFlux::surfaceThicknessFlux(LevelData<FArrayBo
 {
    CH_TIME("PythonInterface::PythonSurfaceFlux::surfaceThicknessFlux");
  
-  Vector<Real> args(SpaceDim + 4);
+  Vector<Real> args(SpaceDim + 3);
   Vector<Real> rval;
   const RefCountedPtr<LevelSigmaCS> levelCS = a_amrIce.geometry(a_level);
-  const LevelData<FArrayBox>& iceFraction = *a_amrIce.iceFraction(a_level);
+
   const DisjointBoxLayout& grids = a_flux.disjointBoxLayout();
   for (DataIterator dit(grids);dit.ok();++dit)
     {
@@ -729,7 +745,6 @@ void PythonInterface::PythonSurfaceFlux::surfaceThicknessFlux(LevelData<FArrayBo
 	  args[i] = a_amrIce.time();i++;
 	  args[i] = levelCS->getH()[dit](iv);i++;
 	  args[i] = levelCS->getTopography()[dit](iv);i++;
-	  args[i] = iceFraction[dit](iv);i++;
 	  FillKwargs(m_kwarg, a_amrIce, a_level,  dit, iv);
 	  PythonEval(m_pFunc, rval,  args, &m_kwarg);
 	  a_flux[dit](iv) =  rval[0];

@@ -108,10 +108,9 @@ void LevelDataSurfaceFlux::surfaceThicknessFlux
 	  LevelData<FArrayBox> tmp; tmp.define(a_flux);
 	  for (DataIterator dit= a_flux.dataIterator(); dit.ok(); ++dit)
 	    {
-	      tmp[dit].setVal(m_defaultValue);
+	      tmp[dit].setVal(0.0);
 	    }
 
-          
 	  FillFromReference(tmp, *m_endFlux, levelDx ,m_dx,m_verbose);
 	  for (DataIterator dit= a_flux.dataIterator(); dit.ok(); ++dit)
 	    {
@@ -185,7 +184,7 @@ void MultiLevelDataSurfaceFlux::surfaceThicknessFlux
 	  readMultiLevelData(data,dxCrse,m_ratio,start->second,name,1);
 	  for (int dir=0;dir<SpaceDim;dir++)
 	    m_dxCrse[dir] = dxCrse;
-	  m_startFlux.resize(data[0].size());
+	  m_startFlux.resize(data.size());
 	  for (int lev = 0; lev < m_startFlux.size(); lev++)
 	    {
 	      m_startFlux[lev] = data[0][lev];
@@ -210,8 +209,7 @@ void MultiLevelDataSurfaceFlux::surfaceThicknessFlux
 	      readMultiLevelData(data,dxCrse,ratio,start->second,name,1);
 	      for (int dir=0;dir<SpaceDim;dir++)
 		CH_assert(m_dxCrse[dir] = dxCrse);
-              m_endFlux.resize(data[0].size());
-	      for (int lev = 0; lev < m_endFlux.size(); lev++)
+	      for (int lev = 0; lev < m_startFlux.size(); lev++)
 		{
 		  CH_assert(ratio[lev] = m_ratio[lev]);
 		  m_endFlux[lev] = data[0][lev];
@@ -225,7 +223,7 @@ void MultiLevelDataSurfaceFlux::surfaceThicknessFlux
   
   for (DataIterator dit= a_flux.dataIterator(); dit.ok(); ++dit)
     {
-      a_flux[dit].setVal(m_defaultValue);
+      a_flux[dit].setVal(0.0);
     }
   
   RealVect dx(m_dxCrse);
@@ -254,7 +252,7 @@ void MultiLevelDataSurfaceFlux::surfaceThicknessFlux
       LevelData<FArrayBox> tmp; tmp.define(a_flux);
       for (DataIterator dit= a_flux.dataIterator(); dit.ok(); ++dit)
 	{
-	  tmp[dit].setVal(m_defaultValue);
+	  tmp[dit].setVal(0.0);
 	}
 
         

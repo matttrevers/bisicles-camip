@@ -355,19 +355,34 @@ BasalFriction* BasalFriction::parse(const char* a_prefix, const RealVect& a_doma
 	  int n = 1;
 	  ildPP.query("frictionFileSteps",n);
 	  
-	  int startTime = 0, timeStep = 1;
+	  //int startTime = 0, timeStep = 1;				// MJT - Changed to Real
+	  Real startTime = 0.0, timeStep = 1.0;				// MJT
 	  ildPP.query("frictionFileStartTime", startTime);
 	  ildPP.query("frictionFileTimeStep", timeStep);
+      int offset = 0;									// MJT - Added (copied from SurfaceFlux.cpp)
+      ildPP.query("frictionFileOffset",offset);			// MJT
+
 	  RefCountedPtr<std::map<Real,std::string> > tf
 	    (new std::map<Real,std::string>);
-	  for (int i =0; i < n; i++)
-	    {
-	      char* file = new char[infileFormat.length()+32];
-	      int j = startTime + i * timeStep;
-	      sprintf(file, infileFormat.c_str(),j);
-	      tf->insert(make_pair(Real(j), file));
-	      delete file;
-	    }
+		
+// 	MJT - removed this loop to replace with a version more like SurfaceFlux.cpp
+//	  for (int i =0; i < n; i++)
+//	    {
+//	      char* file = new char[infileFormat.length()+32];
+//	      int j = startTime + i * timeStep;
+//	      sprintf(file, infileFormat.c_str(),j);
+//	      tf->insert(make_pair(Real(j), file));
+//	      delete file;
+//	    }
+		
+// MJT - Copied and amended this loop from SurfaceFlux.cpp
+      for (int i =0; i < n; i++)
+    	{
+    	  char* file = new char[infileFormat.length()+32];
+    	  sprintf(file, infileFormat.c_str(),i + offset);
+    	  tf->insert(make_pair(startTime + Real(i)*timeStep, file));
+    	  delete[] file;
+    	}
 	  
 	  basalFrictionPtr = static_cast<BasalFriction*>
 	    (new LevelDataBasalFriction(tf,frictionName));

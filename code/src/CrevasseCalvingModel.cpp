@@ -96,6 +96,18 @@ void CrevasseCalvingModel::applyCriterion
   //domain edge calving model always applies
   m_domainEdgeCalvingModel->applyCriterion( a_thickness, a_calvedIce, a_addedIce, a_removedIce, a_iceFrac,a_amrIce, a_level, a_stage);
   
+  //MJT - introduce a time interval
+  const Real& t = a_amrIce.time();
+  Real interval = m_timeInterval;
+  if (m_timeInterval == 0)
+    {
+	  interval = a_amrIce.dt();
+	}  
+  if ( ( t - m_timeLastUpdate) >= interval )
+  {
+    m_timeLastUpdate = t;
+  
+  
   if  (a_stage == PostVelocitySolve)
     {
       // stress model only makes sense when the thickness and veolcity are in sync
@@ -208,7 +220,8 @@ void CrevasseCalvingModel::applyCriterion
 	  FArrayBox& removed = a_removedIce[dit];
 	  FArrayBox& iceFrac = a_iceFrac[dit];
 	  
-	  Box b = levelCoords.grids()[dit];
+	  Box b = thck.box();
+	  b &= iceFrac.box();
 	  for (BoxIterator bit(b); bit.ok(); ++bit)
 	    {
 	      const IntVect& iv = bit(); 
@@ -228,9 +241,9 @@ void CrevasseCalvingModel::applyCriterion
 
 	    } // end loop over cells
 	} // end loop over boxes
-      a_iceFrac.exchange();
-      a_thickness.exchange();
     } // end (a_stage == PostVelocitySolve || a_stage == PostRegrid)
+	
+} // MJT - interval loop
 
 }
 
@@ -270,6 +283,10 @@ CrevasseCalvingModel::CrevasseCalvingModel(ParmParse& a_pp)
   a_pp.query("includeBasalCrevasses",m_includeBasalCrevasses);
   m_calvingZoneLength = -1.0;
   a_pp.query("calvingZoneLength",m_calvingZoneLength);
+  // MJT
+  m_timeInterval = 0.0;
+  a_pp.query("timeInterval",m_timeInterval);
+  m_timeLastUpdate = -1.2345678e+300;
   
   m_stressMeasure = FirstPrincipalStress; // was the original default
   {

@@ -47,16 +47,6 @@ public:
   /// factory method
   virtual CalvingModel* new_CalvingModel() = 0;
 
-  ///frontal ablation vector, if implelmented. Returns false  by default
-  virtual bool getCalvingVel (LevelData<FluxBox>& a_faceCalvingVel,
-			      const LevelData<FluxBox>& a_faceIceVel,
-			      const LevelData<FArrayBox>& a_centreIceVel,
-			      const DisjointBoxLayout& a_grids,
-			      const AmrIce& a_amrIce,int a_level)
-  {
-    return false;
-  }
-    
   /// frontal ablation rate.
   virtual void getCalvingRate(LevelData<FArrayBox>& a_calvingRate, 
 			      const AmrIce& a_amrIce,int a_level);
@@ -302,14 +292,12 @@ public:
                         const Real& a_calvingOceanDepth,
                         const Real& a_minThickness, 
                         const Real& a_startTime, 
-                        const Real& a_endTime,
-			const bool& a_factorMuCoef)
+                        const Real& a_endTime)
     : m_calvingThickness(a_calvingThickness),
       m_calvingOceanDepth(a_calvingOceanDepth),
       m_minThickness(a_minThickness),
       m_startTime(a_startTime),
-      m_endTime(a_endTime),
-      m_factorMuCoef(a_factorMuCoef)
+      m_endTime(a_endTime)
   {
     ;
   }
@@ -319,7 +307,7 @@ public:
   }
 protected:
   Real m_calvingThickness, m_calvingOceanDepth, m_minThickness, m_startTime, m_endTime;
-  bool m_factorMuCoef; // test muCoef*thickness rather than thickness?
+  
 private:
   ThicknessCalvingModel();
 };
@@ -395,10 +383,7 @@ public:
 			      int a_level,
 			      Stage a_stage);
 
-  
-  virtual void getCalvingRate(LevelData<FArrayBox>& a_calvingRate, 
-			      const AmrIce& a_amrIce,int a_level);
-  
+
   virtual ~CompositeCalvingModel();
   
   // this is public for simplicity
@@ -545,24 +530,42 @@ public:
 };
 
 
-/// A Calving model that provides a rate with a part proportional to speed and a part independent of speed
+/// A Calving model that provides a rate proportional to speed: the constant of proportionality can vary in x,y,t
 /**
-   The rate is either a face-centred vector (opposed to ice velocity)
-   or a cell-centered scalar
+   The rate is cell-centred (which fits with the  current implementation in AmrIce::advectIceFrac),
+   The constant is specified by a SurfaceData.
 
-   The rate is r = a u/|u| + b u
+   There is an option to provide a set of flowline co-ordinates (as a csv file), 
+   and normalize the speed to the terminus velocity. This is really just for MJT.
 
-   The constants a,b are specified by SurfaceData.
  */
 class RateProportionalToSpeedCalvingModel : public CalvingModel
 {
 
   Real m_startTime, m_endTime;
   DomainEdgeCalvingModel* m_domainEdgeCalvingModel;
-  SurfaceFlux* m_independent; // a 
-  SurfaceFlux* m_proportion; // b
-  bool m_vector; // face-centred vector or cell-centred scalar?
+  SurfaceFlux* m_proportion;
 
+  //stuff for MJT normalize_vel_to_flowline_terminus_vel logic
+  bool m_normalize_vel_to_flowline_terminus_vel;
+  bool m_measure_along_flowline;
+  bool m_update_every_timestep;
+  Vector<std::pair<Real, Real> > flowline_xy;
+  Real flowlineTerminusSpeed(const AmrIce& a_amrIce);
+  //Real alongFlowTerminusSpeed(const AmrIce& a_amrIce);
+  std::pair<Real, Real> alongFlowTerminusSpeed(const AmrIce& a_amrIce);
+  Real m_flowline_terminus_speed_last_update, m_flowline_terminus_speed_update_interval, m_time_last;
+  int m_level_last;
+  Real m_flowline_terminus_speed, m_max_flowline_terminus_speed;
+  Real m_min_flowline_terminus_speed;
+  Real m_uT;
+  // MJT - extra stuff for the prescribing cfl method
+  bool m_prescribe_cfl;
+  Vector<std::pair<Real, Real> > calvingFront_time_locn;
+  Real m_flowline_terminus_distance;
+  // MJT - and for using a prescribed calving rate
+  bool m_prescribe_calving_rate;
+  Vector<std::pair<Real, Real> > calvingRate_time_rate;
 public:
 
   virtual void applyCriterion(LevelData<FArrayBox>& a_thickness, 
@@ -579,13 +582,6 @@ public:
   virtual ~RateProportionalToSpeedCalvingModel();
   
   virtual CalvingModel* new_CalvingModel();
-
-  ///frontal ablation vector.
-  virtual bool getCalvingVel (LevelData<FluxBox>& a_faceCalvingVel,
-			      const LevelData<FluxBox>& a_faceIceVel,
-			      const LevelData<FArrayBox>& a_centreIceVel,
-			      const DisjointBoxLayout& a_grids,
-			      const AmrIce& a_amrIce,int a_level);
   
   virtual void getCalvingRate(LevelData<FArrayBox>& a_calvingRate, 
 			      const AmrIce& a_amrIce,int a_level);

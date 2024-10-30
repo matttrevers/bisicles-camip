@@ -444,69 +444,6 @@ void IceUtility::addWallDrag(FArrayBox& a_drag,
     }
 }
 
-/// limit cell-centered velocity in cells where frac < tol by linear extrapolation
-void IceUtility::limitMarginVelocity(Vector<LevelData<FArrayBox>*>&a_velocity,
-				     const Vector<LevelData<FArrayBox>*>&a_frac,
-				     int a_finest_level, Real a_minFrac)
-{
-
-  for (int lev = 0; lev <= a_finest_level; lev++)
-    {
-      for (DataIterator dit(a_velocity[lev]->disjointBoxLayout()); dit.ok(); ++dit)
-	{
-	  FArrayBox& vel = (*a_velocity[lev])[dit];
-	  const FArrayBox& frac = (*a_frac[lev])[dit];
-	  Box box = a_velocity[lev]->disjointBoxLayout()[dit];
-	  for (int dir = 0; dir < SpaceDim; dir++)
-	    {
-	      for (int sign = -1; sign <= 1; sign += 2)
-		{
-		  for (BoxIterator bit(box); bit.ok(); ++bit)
-		    {
-		      const IntVect& iv = bit();
-		      IntVect ivp = iv + sign*BASISV(dir);
-		      IntVect ivm = iv - sign*BASISV(dir);
-		      IntVect ivmm = ivm - sign*BASISV(dir);
-		      if ((frac(iv) >= a_minFrac) && ( frac(ivp) < a_minFrac))
-			{
-			  //for (int comp = 0; comp < SpaceDim; comp++)
-			    {
-			      Real vlim = 2.0*vel(ivm, dir) - vel(ivmm, dir);
-			      if (Abs(vel(iv,dir)) > (Abs(vlim))) vel(iv,dir) = vlim;
-			    } // components
-			}
-		    }// cells
-		} //extrapolation signs
-	    }// extrapolation directions
-	} // end loop over boxes
-      a_velocity[lev]->exchange(); 
-    } // end loop over levels
-  
-}
-  
-
-/// limit cell-centered velocity in cells adjacent to margin by linear extrapolation
-void IceUtility::limitMarginVelocity(Vector<LevelData<FArrayBox>*>&a_velocity,
-				     const Vector<LevelData<FArrayBox>*>&a_frac,
-				     int a_finest_level)
-{
-/**
-   The velocity solvers can produce excessive velocity in cells adjacent to the calving
-   front. This function limits the velocity in those cells to values derived from 
-   linear extrapolation from adjacent cells. 
- */
-
-  Real tol = 1.0e-6;
-  
-  // pass one : limit where frac == 1 (full cells)
-  IceUtility::limitMarginVelocity(a_velocity, a_frac, a_finest_level, 1.0-tol);
-  
-  // pass two : limit where frac < 1 (partial cells)
-  IceUtility::limitMarginVelocity(a_velocity, a_frac, a_finest_level, tol);
-}
-
-
-
 /// extrapolate face centered velocity field (usually derived by cell-to-face average) 
 /// to the margins
 void IceUtility::extrapVelocityToMargin(LevelData<FluxBox>& a_faceVel, 
@@ -560,15 +497,13 @@ void IceUtility::extrapVelocityToMargin(LevelData<FluxBox>& a_faceVel,
 	{
 	  Box faceBox = grids[dit];
 	  faceBox.surroundingNodes(dir);
-
-	  // don't extrapolate beyond the domain.
-	  Box domBox = a_cellVel.disjointBoxLayout().physDomain().domainBox();
-	  domBox.surroundingNodes(dir);
-	  domBox.grow(dir, -1);
-	  faceBox &= domBox;
-
 	  FArrayBox& faceVel = a_faceVel[dit][dir];
-	  CH_assert(faceVel.box().contains(faceBox));
+	  
+	  //{Real maxFaceVelocity = faceVel.norm(faceBox,0);
+	  //CH_assert(maxFaceVelocity < 0.5 * HUGE_VEL);}
+	  
+	  Box grownFaceBox = faceBox;
+	  CH_assert(faceVel.box().contains(grownFaceBox));
 	  FArrayBox vface(faceBox,1);
 	  FArrayBox faceVelCopy(faceVel.box(), 1); faceVelCopy.copy(faceVel);
 
@@ -626,12 +561,6 @@ void IceUtility::computeFaceVelocity
       a_cellDiffusivity[dit].setVal(0.0);
       for (int dir = 0; dir < SpaceDim; dir++)
 	a_faceDiffusivity[dit][dir].setVal(0.0);
-
-      for (int dir = 0 ; dir < SpaceDim; dir++)
-	{
-	  a_faceVelAdvection[dit][dir].setVal(0.0);
-	}
-      
     }
   
   if (a_crseVelocity != NULL)
@@ -829,7 +758,7 @@ void IceUtility::computeSigmaVelocity
 			   CHF_BOX(box));
       
       
-      //CH_assert(uSigma.norm(0) < HUGE_NORM);
+      CH_assert(uSigma.norm(0) < HUGE_NORM);
     } //end compute vertical velocity loop over boxes
       
   a_uSigma.exchange();
@@ -1076,15 +1005,7 @@ void IceUtility::eliminateRemoteIce
 	    {
 	      const IntVect& iv = bit();
 	      Real prevThck = h(iv);
-	      bool isolated = (mask(iv) == FLOATINGMASKVAL && thisPhi(iv) < 0.5);
-
-	      //while we are here, a single cell of grounded ice is a pain too
-	      isolated = isolated || TINY_THICKNESS >
-		(D_TERM(h(iv+BASISV(0)) + h(iv-BASISV(0)),
-			+ h(iv+BASISV(1)) + h(iv-BASISV(1)),
-			0.0) );
-	      
-	      if (isolated)
+	      if (mask(iv) == FLOATINGMASKVAL && thisPhi(iv) < 0.5)
 	      	{
 		  h(iv) = 0.0;
 		  D_DECL(u(iv,0) = 0 ,u(iv,1) = 0, u(iv,2) = 0);
@@ -1093,6 +1014,23 @@ void IceUtility::eliminateRemoteIce
 	      	}
 	      // Record gain/loss of ice
 	      CalvingModel::updateCalvedIce(h(iv),prevThck,mask(iv),added(iv),calved(iv),removed(iv));
+	      //removed(iv) += (prevThck-h(iv));
+	      /*	      if (h(iv) > prevThck)
+		{
+		  added(iv) += (prevThck-h(iv));
+		}
+	      else 
+		{
+		  if (mask(iv) == OPENLANDMASKVAL || mask(iv) == FLOATINGMASKVAL)
+		    {
+		      removed(iv) += (prevThck-h(iv));
+		    }
+		  else
+		    {
+		      removed(iv) += (prevThck-h(iv));
+		    }
+		} 
+	      */
 	    }
 	}
       levelCS.getH().exchange();
@@ -1186,25 +1124,24 @@ void IceUtility::multiplyByGroundedFraction
  */ 
 void IceUtility::setFloatingBasalFriction
 (LevelData<FArrayBox>& a_C, const LevelSigmaCS& a_coords,
- const DisjointBoxLayout& a_grids)
+ const DisjointBoxLayout& a_grids, Real m_reset_floating_friction_factor) // MJT added the factor
+ //const DisjointBoxLayout& a_grids)
 {
   CH_TIME("IceUtility::setFloatingBasalFriction");
 
   // options that uses to get set in AmrIce, have established defaults, but only
   // apply to this function. 
   int subdivision = 0; // > 0 for sub-grid interpolation
-  Real ice_free_beta = 1.0e+2;
+  
   {
     // for backward compatibility
     ParmParse pp("amr");
     pp.query("grounding_line_subdivision", subdivision);
-    pp.query("ice_free_beta", ice_free_beta);
   }
 
   {
     ParmParse pp("basal_friction");
     pp.query("grounding_line_subdivision", subdivision);
-    pp.query("ice_free_beta", ice_free_beta);
   }
  
   if (subdivision > 0)
@@ -1219,18 +1156,61 @@ void IceUtility::setFloatingBasalFriction
     {
       bool anyFloating = a_coords.anyFloating()[dit]; 
       // set friction on open land and open sea to 100. Set friction on floating ice to 0
+	  // MJT - updated this to multiply it by a factor, defaulting to zero
       if(anyFloating)
 	{
 	  FArrayBox& thisC = a_C[dit];
 	  const BaseFab<int>& mask = a_coords.getFloatingMask()[dit];
 	  FORT_SETFLOATINGBETA(CHF_FRA1(thisC,0),
+	               CHF_REAL(m_reset_floating_friction_factor),		// MJT added this factor
 			       CHF_CONST_FIA1(mask,0),
-			       CHF_REAL(ice_free_beta),
 			       CHF_BOX(a_grids[dit]));
 	  
 	  // friction must be non-negative
 	  CH_assert(thisC.min(a_grids[dit]) >= 0.0); 
 	}  
+    }
+}
+
+  /// MJT 
+  /// smooth basal friction linearly to zero for grounded ice where the 
+  ///thickness above flotation is below a certain fraction of the total thickness
+void IceUtility::smoothGroundedFrictionToZero
+(LevelData<FArrayBox>& a_C, const LevelSigmaCS& a_coords,
+ const DisjointBoxLayout& a_grids, Real m_reduce_grounded_friction_limit)
+ //const DisjointBoxLayout& a_grids)
+{
+  CH_TIME("IceUtility::smoothGroundedFrictionToZero");
+
+  //finally, set C = 0 in any floating cells - covers nRef == 0 and nRef > 0
+  for (DataIterator dit(a_grids); dit.ok(); ++dit)
+    {
+    
+	  FArrayBox& thisC = a_C[dit];
+	  const FArrayBox& thk = a_coords.getH()[dit];
+	  const FArrayBox& thkAF = a_coords.getThicknessOverFlotation()[dit];
+	  FArrayBox thkRatioAF(a_grids[dit],1);
+	  const BaseFab<int>& mask = a_coords.getFloatingMask()[dit];
+      const Box& b = a_coords.grids()[dit]; 
+	  
+	  // Calculate the ratio of thickness above flotation against total thickness
+      for (BoxIterator bit(b); bit.ok(); ++bit)
+        {
+          const IntVect& iv = bit();
+          thkRatioAF(iv) = (thkAF(iv) + TINY_NORM);
+          thkRatioAF(iv) /= (thk(iv) + TINY_NORM);
+        }	  
+		
+      //m_reduce_grounded_friction_limit += TINY_NORM;
+
+	  FORT_SMOOTHGROUNDEDBETA(CHF_FRA1(thisC,0),
+	               CHF_FRA1(thkRatioAF,0),
+	               CHF_REAL(m_reduce_grounded_friction_limit),
+			       CHF_CONST_FIA1(mask,0),
+			       CHF_BOX(a_grids[dit]));
+	  
+	  // friction must be non-negative
+	  CH_assert(thisC.min(a_grids[dit]) >= 0.0); 
     }
 }
 

@@ -61,6 +61,8 @@ public:
     m_waterDepth = a.m_waterDepth->new_surfaceFlux();
     m_includeBasalCrevasses = a.m_includeBasalCrevasses;
     m_calvingZoneLength = a.m_calvingZoneLength;
+    m_timeInterval = a.m_timeInterval;						// MJT
+	m_timeLastUpdate = a.m_timeLastUpdate;					// MJT
     m_domainEdgeCalvingModel = new DomainEdgeCalvingModel(*a.m_domainEdgeCalvingModel);
     m_stressMeasure = a.m_stressMeasure;
   }
@@ -74,6 +76,8 @@ protected:
   SurfaceFlux* m_waterDepth;
   bool m_includeBasalCrevasses;
   Real m_calvingZoneLength;
+  Real m_timeInterval;										// MJT
+  Real m_timeLastUpdate;									// MJT
   DomainEdgeCalvingModel* m_domainEdgeCalvingModel;
   StressMeasure m_stressMeasure; 
 

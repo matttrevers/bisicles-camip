@@ -51,13 +51,10 @@
 #include "BRMeshRefine.H"
 #include "FineInterp.H"
 #include "ReadLevelData.H"
-#include "memusage.H"
- 
 #ifdef CH_USE_PETSC
 #include "petsc.h"
 #endif 
 #include "Regression.H"
-//#include "pythonGIAflux.H"
 
 /// types of basal friction (beta) distributions
 /** SinusoidalBeta is the one for exp C in Pattyn et al (2008)
@@ -80,10 +77,7 @@ int main(int argc, char* argv[]) {
   int ierr = 0;
 
 #ifdef CH_USE_PETSC
-#ifndef PETSC_NULLPTR
-#define PETSC_NULLPTR PETSC_NULL
-#endif
-  ierr = PetscInitialize(&argc, &argv,PETSC_NULLPTR,PETSC_NULLPTR); CHKERRQ(ierr);
+  ierr = PetscInitialize(&argc, &argv,PETSC_NULL,PETSC_NULL); CHKERRQ(ierr);
 #else
 #ifdef CH_MPI
   MPI_Init(&argc, &argv);
@@ -227,34 +221,10 @@ int main(int argc, char* argv[]) {
     SurfaceFlux* topg_flux_ptr = SurfaceFlux::parse("topographyFlux");
     if (topg_flux_ptr == NULL)
       {
-	// local parsing if necessary
-	std::string type = "";
-	
-	ParmParse pp("topographyFlux");
-	pp.query("type",type);
-	
-	if (type == "pythonGIA")
-	  {
-	    // initialize pythonGIA
-	    //topg_flux_ptr = new pythonGIAflux();
-	    ParmParse pyPP("PythonGIA");
-	    std::string module;
-	    pyPP.get("module",module);
-	    std::string giaFuncName = "giaFunc";
-	    pyPP.query("giaFunction",giaFuncName);
-#if 0
-	    pythonGIAflux* pythonPtr = new pythonGIAflux(module,
-							 giaFuncName);
-	    topg_flux_ptr = static_cast<SurfaceFlux*>( pythonPtr);
-#endif
-	  }
-	else
-	  {
-	    topg_flux_ptr = new zeroFlux();
-	  }
+	topg_flux_ptr = new zeroFlux();
       }
     amrObject.setTopographyFlux(topg_flux_ptr); 
-    
+
     // ---------------------------------------------
     // set mu coefficient
     // ---------------------------------------------
@@ -363,18 +333,6 @@ int main(int argc, char* argv[]) {
 	    thicknessFunction =ptr;
 
           }
-        else if (thicknessType == "circularSupportConstant")
-          {
-	    Real thickness, supportRadius;
-            Vector<Real> tmpRealVect(SpaceDim,0); 
-	    mPP.get("thickness", thickness);
-            mPP.get("supportRadius", supportRadius);
-            mPP.getarr("center", tmpRealVect, 0, SpaceDim);
-            RealVect center(D_DECL(tmpRealVect[0],tmpRealVect[1],tmpRealVect[2]));
-
-	    RefCountedPtr<RealFunction<RealVect> > ptr(new CircularSupportConstantRealFunction(thickness,center, supportRadius));
-	    thicknessFunction =ptr;            
-          }
         else if (thicknessType == "compactSupportInclinedPlane")
           {
 	    Real originThickness;
@@ -475,8 +433,9 @@ int main(int argc, char* argv[]) {
 
 	    RefCountedPtr<RealFunction<RealVect> > ptr(new GaussianFunction(center,
                                                                             radius,
-                                                                            magnitude,
-                                                                            offset));
+//                                                                            magnitude,
+//                                                                            offset));
+                                                                            magnitude));
 	    bedrockFunction[0] =  ptr;
 	  }        
         else if (geometry == "regroundingTest")
@@ -758,7 +717,8 @@ int main(int argc, char* argv[]) {
        }
 #ifdef HAVE_PYTHON
      else if (problem_type == "Python")
-       {	 
+       {
+	 
 	 ParmParse pyPP("PythonIBC");
 	 std::string module;
 	 pyPP.get("module",module);
@@ -948,17 +908,8 @@ int main(int argc, char* argv[]) {
     //Real startTime;
     pp2.get("maxTime", maxTime);
     pp2.get("maxStep", maxStep);
-
-    bool newTimeStep = false;
-    pp2.query("newTimeStep", newTimeStep);
-    if (newTimeStep)
-      {
-	amrObject.run2(maxTime, maxStep);
-      }
-    else
-      {
-	amrObject.run(maxTime, maxStep);
-      }
+    
+    amrObject.run(maxTime, maxStep);
     
     // clean up
     if (constRelPtr != NULL)
@@ -1044,10 +995,6 @@ int main(int argc, char* argv[]) {
   }  // end nested scope
   
 
-  // report memory usage and leaks
-#ifdef REPORT_MEMORY
-  dumpmemoryatexit();
-#endif
   CH_TIMER_REPORT();
 
 #ifdef HAVE_PYTHON

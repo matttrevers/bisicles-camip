@@ -37,9 +37,6 @@ public:
   virtual const Vector<int>& refRatios() const  = 0;
   //virtual const Vector<Real>& amrDx() const = 0;
 
-  //access to the ice fraction
-  virtual const LevelData<FArrayBox>* iceFraction(int a_level) const = 0;
-
   //access to the velocity
   virtual const LevelData<FArrayBox>* velocity(int a_level) const = 0;
   //virtual const Vector<LevelData<FArrayBox>* >& amrVelocity() const = 0;
@@ -55,6 +52,10 @@ public:
   //grouding line proximity
   virtual const LevelData<FArrayBox>* groundingLineProximity(int a_level) const = 0;
   virtual Real groundingLineProximityScale() const = 0;
+  
+  // MJT - dt and timestep
+  virtual Real dt() const = 0;
+  virtual int current_timestep() const = 0;
   
   // viscous tensor
   enum viscousTensorComponent{xx,xy,yx,yy,max};

@@ -114,11 +114,6 @@ public:
   /// creates a new copy of this  ConstitutiveRelation object.
   virtual ConstitutiveRelation* getNewConstitutiveRelation() const = 0;
 
-  // extrapolate the velocity beyond the front: needed to avoid large artificial strains
-  void extendVelocity(LevelData<FArrayBox>& a_modifiedVel,
-		      const LevelData<FArrayBox>& a_originalVel,
-		      const LevelData<FArrayBox>& a_iceThickness) const;
-    
   /// compute cell-centered strainrate invariant epsilon^2
   void computeStrainRateInvariant(LevelData<FArrayBox>& a_epsilonSquared,
                                   const LevelData<FArrayBox>& a_velocity,
