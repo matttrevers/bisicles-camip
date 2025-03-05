@@ -554,11 +554,14 @@ private:
   /// misfit term  \f$|| f(u,u_o) ||^2_2\f$
   Vector<LevelData<FArrayBox>*> m_velocityMisfit;
   
-  /// misfit term  \f$|| f(u,u_o) ||^2_2\f$
+  /// relative misfit term  \f$|| f(u,u_o) ||^2_2\f$
   Vector<LevelData<FArrayBox>*> m_velocityRelativeMisfit;
   
-  /// misfit term  \f$|| f(u,u_o) ||^2_2\f$
+  /// misfit term  \f$|| alpha*f(u,u_o) ||^2_2\f$
   Vector<LevelData<FArrayBox>*> m_realVelocityMisfit;
+  
+  /// observed velocity norm  \f$|| alpha*f(u_o) ||^2_2\f$
+  Vector<LevelData<FArrayBox>*> m_observedVelocityNorm;
   
   /// misfit term \f$|| g(\nabla \cdot ( u h)  , \nabla \cdot ( u_o h_o) ) ||^2_2\f$
   Vector<LevelData<FArrayBox>*> m_divuhMisfit;
