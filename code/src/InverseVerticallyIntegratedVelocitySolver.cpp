@@ -59,7 +59,7 @@ InverseVerticallyIntegratedVelocitySolver::Configuration::~Configuration()
       delete m_velObs_y; m_velObs_y = NULL;
     }
 #endif
-    if (m_velObs_c != NULL)
+  if (m_velObs_c != NULL)
     {
       delete m_velObs_c; m_velObs_c = NULL;
     }
@@ -118,31 +118,32 @@ InverseVerticallyIntegratedVelocitySolver::Configuration::parse(const char* a_pr
   
   m_CGmaxIter = 16;
   pp.query("CGmaxIter",m_CGmaxIter);
-    
-  m_CGminIter = 3;							//MJT
-  pp.query("CGminIter",m_CGminIter);		//MJT
   
   m_CGtol = 1.0e-3;
   pp.query("CGtol",m_CGtol);
-  
-  m_CGsecantParameter = 1.0e-7;
-  pp.query("CGsecantParameter",m_CGsecantParameter);
-  
-  m_CGsecantStepMaxGrow = 2.0;
-  pp.query("CGsecantStepMaxGrow",m_CGsecantStepMaxGrow);
-  
-  m_CGsecantMaxIter = 20;
-  pp.query("CGsecantMaxIter",m_CGsecantMaxIter);
-  
-  m_CGsecantTol = 1.0e-1;
-  pp.query("CGsecantTol",m_CGsecantTol);
-  
+
   m_CGhang = 0.999;
   pp.query("CGhang",m_CGhang);
   
-  m_CGhangLimit = 10.0;						//MJT
-  pp.query("CGhangLimit",m_CGhangLimit);	//MJT
+  m_CGlineSearchMethod = CGOPT_LINE_SEARCH_SECANT;
+  m_CGlineSearchInitialStep = 1.0e-7;
+  m_CGlineSearchStepMaxGrow = 2.0;
+  m_CGlineSearchMaxIter = 20;
+  m_CGlineSearchTol = 1.0e-1;
   
+  // backward compat.
+  pp.query("CGsecantParameter",m_CGlineSearchInitialStep);
+  pp.query("CGsecantStepMaxGrow",m_CGlineSearchStepMaxGrow);
+  pp.query("CGsecantMaxIter",m_CGlineSearchMaxIter);
+  pp.query("CGsecantTol",m_CGlineSearchTol);
+  // new names
+  pp.query("CGlineSearchMethod",m_CGlineSearchMethod);
+  pp.query("CGlineSearchInitialStep",m_CGlineSearchInitialStep);
+  pp.query("CGlineSearchStepMaxGrow",m_CGlineSearchStepMaxGrow);
+  pp.query("CGlineSearchMaxIter",m_CGlineSearchMaxIter);
+  pp.query("CGlineSearchTol",m_CGlineSearchTol);
+  
+
   m_CGrestartInterval = 9999;
   pp.query("restartInterval",m_CGrestartInterval);
 
@@ -311,11 +312,12 @@ InverseVerticallyIntegratedVelocitySolver::Configuration::parse(const char* a_pr
   
   m_outerStepsNum = 0;
   pp.query("outerStepsNum",m_outerStepsNum);
+  m_writeSelectOuterSteps = false;
   if (m_outerStepsNum > 0)
     {
-	  m_writeSelectOuterSteps = true;
+      m_writeSelectOuterSteps = true;
       pp.getarr("outerSteps", m_outerSteps, 0, m_outerStepsNum);
-	}
+    }
   
 
 
@@ -415,6 +417,7 @@ int InverseVerticallyIntegratedVelocitySolver::solve
  Real a_time,
  int a_lbase, int a_maxLevel)
 {
+  CH_TIME("InverseVerticallyIntegratedVelocitySolver::solve");
   pout() << " InverseVerticallyIntegratedVelocitySolver::solve " << std::endl;
 
   m_bestMisfit = 1.23456789e+300;
@@ -426,25 +429,35 @@ int InverseVerticallyIntegratedVelocitySolver::solve
   m_addedIce = a_addedIce;
   m_removedIce = a_removedIce;
   m_time = a_time;
+
+  bool skipOptimization = ((m_time - m_prev_time) < m_config.m_minTimeBetweenOptimizations);
+  if (skipOptimization)
+    {
+      pout() << " InverseVerticallyIntegratedVelocitySolver::solve: skipping optimization" << std::endl;
+    }
+
   
   //best fit velocity is to be output
   m_bestVel = a_horizontalVel;
 
-  // assign input C to C_0 and limit
+  // assign input C to C_0 and limit if needed
   assign(m_COrigin, a_C);
-  for (int  lev = 0; lev < m_COrigin.size(); lev++)
+  if (!skipOptimization)
     {
-      for (DataIterator dit(m_grids[lev]); dit.ok(); ++dit)
+      for (int  lev = 0; lev < m_COrigin.size(); lev++)
 	{
-	  FArrayBox& c = (*m_COrigin[lev])[dit];
-	  const Real& cmax = m_config.m_initialUpperC;
-	  const Real& cmin = m_config.m_initialLowerC;
-	  FORT_BOUNDCTRL(CHF_FRA1(c,0),
-			 CHF_CONST_REAL(cmin),
-			 CHF_CONST_REAL(cmax),
-			 CHF_BOX(m_grids[lev][dit]));
-	} 
-    } 
+	  for (DataIterator dit(m_grids[lev]); dit.ok(); ++dit)
+	    {
+	      FArrayBox& c = (*m_COrigin[lev])[dit];
+	      const Real& cmax = m_config.m_initialUpperC;
+	      const Real& cmin = m_config.m_initialLowerC;
+	      FORT_BOUNDCTRL(CHF_FRA1(c,0),
+			     CHF_CONST_REAL(cmin),
+			     CHF_CONST_REAL(cmax),
+			     CHF_BOX(m_grids[lev][dit]));
+	    } 
+	}
+    }
   
   if ( Abs(a_time - m_prev_time) < TINY_NORM) 
     {
@@ -461,20 +474,22 @@ int InverseVerticallyIntegratedVelocitySolver::solve
     {
       // assign input muCoef to muCoef_0 and limit
       assign(m_muCoefOrigin, a_muCoef);
-     
-      for (int  lev = 0; lev < m_muCoefOrigin.size(); lev++)
+      if (!skipOptimization)
 	{
-	  for (DataIterator dit(m_grids[lev]); dit.ok(); ++dit)
+	  for (int  lev = 0; lev < m_muCoefOrigin.size(); lev++)
 	    {
-	      FArrayBox& mc = (*m_muCoefOrigin[lev])[dit];
-	      const Real& mcmax = m_config.m_initialUpperMuCoef;
-	      const Real& mcmin = m_config.m_initialLowerMuCoef;
-	       FORT_BOUNDCTRL(CHF_FRA1(mc,0),
-	       		     CHF_CONST_REAL(mcmin),
-	       		     CHF_CONST_REAL(mcmax),
-	       		     CHF_BOX(m_grids[lev][dit]));
-	    } 
-	} 
+	      for (DataIterator dit(m_grids[lev]); dit.ok(); ++dit)
+		{
+		  FArrayBox& mc = (*m_muCoefOrigin[lev])[dit];
+		  const Real& mcmax = m_config.m_initialUpperMuCoef;
+		  const Real& mcmin = m_config.m_initialLowerMuCoef;
+		  FORT_BOUNDCTRL(CHF_FRA1(mc,0),
+				 CHF_CONST_REAL(mcmin),
+				 CHF_CONST_REAL(mcmax),
+				 CHF_BOX(m_grids[lev][dit]));
+		} 
+	    }
+	}
     }
 
 
@@ -511,22 +526,22 @@ int InverseVerticallyIntegratedVelocitySolver::solve
       LevelData<FArrayBox> u;
       // DFM (1/4/21) -- use D_TERM here to enable 1D (flowline) build
       D_TERM(
-      if (m_config.m_velObs_x)
-	{
-	  aliasLevelData(u, m_velObs[lev], Interval(0,0) );
-	  m_config.m_velObs_x->evaluate(u, *m_amrIce, lev, 0.0);
-	},
-      if (m_config.m_velObs_y)
-	{
-	  aliasLevelData(u, m_velObs[lev], Interval(1,1) );
-	  m_config.m_velObs_y->evaluate(u, *m_amrIce, lev, 0.0);
-	},
-      // D_TERM needs a 3D entry, which is nothing here.
+	     if (m_config.m_velObs_x)
+	       {
+		 aliasLevelData(u, m_velObs[lev], Interval(0,0) );
+		 m_config.m_velObs_x->evaluate(u, *m_amrIce, lev, 0.0);
+	       },
+	     if (m_config.m_velObs_y)
+	       {
+		 aliasLevelData(u, m_velObs[lev], Interval(1,1) );
+		 m_config.m_velObs_y->evaluate(u, *m_amrIce, lev, 0.0);
+	       },
+	     // D_TERM needs a 3D entry, which is nothing here.
              )
-      if (m_config.m_velObs_c)
-	{
-	  m_config.m_velObs_c->evaluate( *m_velCoef[lev], *m_amrIce, lev, 0.0);
-	}
+	if (m_config.m_velObs_c)
+	  {
+	    m_config.m_velObs_c->evaluate( *m_velCoef[lev], *m_amrIce, lev, 0.0);
+	  }
     }
 
  
@@ -549,24 +564,30 @@ int InverseVerticallyIntegratedVelocitySolver::solve
     {
       
       m_outerCounter = 0;
-      m_innerCounter = 0; 		// MJT
-
+      m_innerCounter = 0;
+      
       int CGmaxIter = m_config.m_CGmaxIter;
-	  int CGminIter = m_config.m_CGminIter;
-      if ( (m_time - m_prev_time) < m_config.m_minTimeBetweenOptimizations)
+      //int CGminIter = m_config.m_CGminIter;
+      if (skipOptimization)
 	{
 	  // just initialize the optimization, which means computing the first objective etc.
 	  CGmaxIter = 0;
-	  CGminIter = -1;			// MJT
+	  //CGminIter = -1;		
 	}
   
       pout() << " Optimization: CGmaxIter = " << CGmaxIter << "  m_time = " << m_time << "  m_prev_time = " << m_prev_time  << "  m_interval = " << m_config.m_minTimeBetweenOptimizations  << std::endl;
       
       // attempt the optimization
-      //CGOptimize(*this ,  X , CGmaxIter , m_config.m_CGtol , m_config.m_CGhang,										//MJT
-      CGOptimize(*this ,  X , CGmaxIter , CGminIter , m_config.m_CGtol , m_config.m_CGhang , m_config.m_CGhangLimit,	//MJT
-		 m_config.m_CGsecantParameter, m_config.m_CGsecantStepMaxGrow, 
-		 m_config.m_CGsecantMaxIter , m_config.m_CGsecantTol, m_outerCounter);
+      CGOptimize(*this,  X, CGmaxIter,
+		 m_config.m_CGtol,
+		 m_config.m_CGhang,
+		 m_config.m_CGlineSearchMethod,
+		 m_config.m_CGlineSearchInitialStep,
+		 m_config.m_CGlineSearchStepMaxGrow, 
+		 m_config.m_CGlineSearchMaxIter ,
+		 m_config.m_CGlineSearchTol,
+		 m_outerCounter);
+      
       m_optimization_done = true;
 
       if (CGmaxIter > 0)
@@ -743,6 +764,11 @@ int InverseVerticallyIntegratedVelocitySolver::nDoF(const Vector<LevelData<FArra
 void 
 InverseVerticallyIntegratedVelocitySolver::mapX(const Vector<LevelData<FArrayBox>* >& a_x)
 {
+
+  CH_TIME("InverseVerticallyIntegratedVelocitySolver::mapX");
+  pout() << "InverseVerticallyIntegratedVelocitySolver::mapX" << std::endl;
+  
+  
   updateInvalid(a_x);
 
   if (m_config.m_rankRedBlack)
@@ -876,6 +902,10 @@ InverseVerticallyIntegratedVelocitySolver::solveStressEqn
  const Vector<LevelData<FArrayBox>* >& a_muCoef)
 {
 
+  CH_TIME("InverseVerticallyIntegratedVelocitySolver::solveStressEqn");
+  pout() << "InverseVerticallyIntegratedVelocitySolver::solveStressEqn" << std::endl;
+  
+  
   JFNKSolver jfnkSolver;
   jfnkSolver.define(m_domain[0], m_constitutiveRelation , m_basalFrictionRelation,
 		    m_grids, m_refRatio, m_dx[0], m_thicknessIBC, m_finest_level+1);
@@ -913,6 +943,9 @@ InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient
  const Vector<LevelData<FArrayBox>* >& a_x, bool a_inner)
 {
 
+  CH_TIME("InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient");
+  pout() << "InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient" << std::endl;
+  
   a_fm = 0.0;
   a_fp = 0.0;
   setToZero(a_g);
@@ -995,17 +1028,19 @@ InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient
   
   //compute gradient 
   setToZero(a_g);
-    
+  
   //compute directional derivatives of unregularized problrm
   computeGradient(a_g, a_x);
   
   //add Tikhonov regularization
   regularizeGradient(a_g, a_x);
 
+ 
   //red-black scheme modifies gradient
   if (m_config.m_rankRedBlack)
-    rankRedBlackGradient(a_g);
-  
+    {
+      rankRedBlackGradient(a_g);
+    }
   
   if (m_config.m_boundMethod == Configuration::projection)
     applyProjection(a_g, a_x);
@@ -1025,26 +1060,6 @@ InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient
 	}
     }
 
-
-  // //limit gradient (is this a good plan?)
-  //  for (int lev = 0; lev <= m_finest_level; lev++)
-  //   {
-  //     for (DataIterator dit(m_grids[lev]); dit.ok(); ++dit)
-  // 	{
-  // 	  FArrayBox& g = (*a_g[lev])[dit];
-  // 	  for (BoxIterator bit(g.box());bit.ok();++bit)
-  // 	    {
-  // 	      const IntVect& iv = bit();
-  // 	      for (int comp =  0; comp < g.nComp(); comp++)
-  // 		{
-  // 		  g(iv,comp) = max(g(iv,comp),-1.0e+6);
-  // 		  g(iv,comp) = min(g(iv,comp),+1.0e+6);
-  // 		}
-  // 	    }
-  // 	}
-  //   }
-
-
   //dump data
   if (m_config.m_writeInnerSteps)
     {
@@ -1053,11 +1068,11 @@ InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient
     }
   if (!a_inner)
     {
-	  if (!m_config.m_writeSelectOuterSteps || (std::find(m_config.m_outerSteps.begin(), m_config.m_outerSteps.end(), m_outerCounter) != m_config.m_outerSteps.end()))
-		{
-		  writeState(outerStateFile(), m_innerCounter, a_x, a_g);
-		}
-	  m_outerCounter++;
+      if (!m_config.m_writeSelectOuterSteps || (std::find(m_config.m_outerSteps.begin(), m_config.m_outerSteps.end(), m_outerCounter) != m_config.m_outerSteps.end()))
+	{
+	  writeState(outerStateFile(), m_innerCounter, a_x, a_g);
+	}
+      m_outerCounter++;
     }
 }
 
@@ -1080,35 +1095,35 @@ InverseVerticallyIntegratedVelocitySolver::computeDivUH()
   {
     LevelData<FArrayBox>* cellDiffusivity = NULL;
     for (int lev = 0; lev <= m_finest_level; lev++)
-    {
+      {
 
-      // a few pointers to coarse level data
-      LevelData<FArrayBox>* crseVelPtr = (lev > 0)?m_velb[lev-1]:NULL;
-      int nRefCrse = (lev > 0)?m_refRatio[lev-1]:1;
-      LevelData<FArrayBox>* crseCellDiffusivityPtr = (lev > 0)?cellDiffusivity:NULL;
-      cellDiffusivity = new LevelData<FArrayBox>(m_grids[lev],1,IntVect::Unit);
+	// a few pointers to coarse level data
+	LevelData<FArrayBox>* crseVelPtr = (lev > 0)?m_velb[lev-1]:NULL;
+	int nRefCrse = (lev > 0)?m_refRatio[lev-1]:1;
+	LevelData<FArrayBox>* crseCellDiffusivityPtr = (lev > 0)?cellDiffusivity:NULL;
+	cellDiffusivity = new LevelData<FArrayBox>(m_grids[lev],1,IntVect::Unit);
       
-      //temporaries...
-      LevelData<FluxBox> faceVelAdvection(m_grids[lev],1,IntVect::Unit);
-      LevelData<FluxBox> faceDiffusivity(m_grids[lev],1,IntVect::Zero);
-      int nLayer = m_A[0]->nComp();
-      LevelData<FluxBox> layerXYFaceXYVel(m_grids[lev],nLayer,IntVect::Zero);
-      LevelData<FArrayBox> layerSFaceXYVel(m_grids[lev],SpaceDim*(nLayer + 1),IntVect::Zero);
+	//temporaries...
+	LevelData<FluxBox> faceVelAdvection(m_grids[lev],1,IntVect::Unit);
+	LevelData<FluxBox> faceDiffusivity(m_grids[lev],1,IntVect::Zero);
+	int nLayer = m_A[0]->nComp();
+	LevelData<FluxBox> layerXYFaceXYVel(m_grids[lev],nLayer,IntVect::Zero);
+	LevelData<FArrayBox> layerSFaceXYVel(m_grids[lev],SpaceDim*(nLayer + 1),IntVect::Zero);
       
-      bool additionalVelocity = false;
+	bool additionalVelocity = false;
 
-      IceUtility::computeFaceVelocity
-       	(faceVelAdvection, *faceU[lev], faceDiffusivity,
-	 *cellDiffusivity, layerXYFaceXYVel , layerSFaceXYVel ,
-	 *m_velb[lev],*m_coordSys[lev], m_thicknessIBC, 
-	 *m_A[lev], *m_A[lev], *m_A[lev], 
-	 crseVelPtr,crseCellDiffusivityPtr, nRefCrse, 
-	 m_constitutiveRelation, additionalVelocity, false);
+	IceUtility::computeFaceVelocity
+	  (faceVelAdvection, *faceU[lev], faceDiffusivity,
+	   *cellDiffusivity, layerXYFaceXYVel , layerSFaceXYVel ,
+	   *m_velb[lev],*m_coordSys[lev], m_thicknessIBC, 
+	   *m_A[lev], *m_A[lev], *m_A[lev], 
+	   crseVelPtr,crseCellDiffusivityPtr, nRefCrse, 
+	   m_constitutiveRelation, additionalVelocity, false);
 
-      if (crseCellDiffusivityPtr != NULL)
-	delete crseCellDiffusivityPtr;
+	if (crseCellDiffusivityPtr != NULL)
+	  delete crseCellDiffusivityPtr;
 
-    }
+      }
   }
 
   //2. compute face thickness (PPM...)
@@ -1193,8 +1208,10 @@ void
 InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs()
 {
   
-
-  
+ CH_TIME("InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs");
+ pout() << " InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs" << std::endl;
+ 
+ 
   // rhs contribution due to velocity mismatch
   for (int lev=0; lev <= m_finest_level ;lev++)
     {
@@ -1225,12 +1242,12 @@ InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs()
 	  else if (m_config.m_velMisfitType == Configuration::velocity)
 	    {
 	      FORT_ADJRHSVELCTRL(CHF_FRA1(adjRhs,0), CHF_FRA1(adjRhs,1),
-				   CHF_CONST_FRA1(misfit,0),
-				   CHF_CONST_FRA1(um,0), CHF_CONST_FRA1(um,1),
-				   CHF_CONST_FRA1(uo,0), CHF_CONST_FRA1(uo,1),
-				   CHF_BOX(box));
+				 CHF_CONST_FRA1(misfit,0),
+				 CHF_CONST_FRA1(um,0), CHF_CONST_FRA1(um,1),
+				 CHF_CONST_FRA1(uo,0), CHF_CONST_FRA1(uo,1),
+				 CHF_BOX(box));
 	    }
-	   if (m_config.m_velMisfitType == Configuration::log_speed)
+	  if (m_config.m_velMisfitType == Configuration::log_speed)
 	    {
 	      FORT_ADJRHSLOGSPDCTRL(CHF_FRA1(adjRhs,0), CHF_FRA1(adjRhs,1),
 				    CHF_FRA1(misfit,0),
@@ -1243,36 +1260,36 @@ InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs()
 	      CH_assert(m_config.m_velMisfitType < Configuration::MAX_VELOCITY_MISFIT_TYPE);
 	    }
 
-		// delete later, just for testing
-		// And get rid of m_realVelocityMisfit
-	   for (BoxIterator bit(box);bit.ok();++bit)
-	     {
-	       const IntVect& iv = bit();
-	       if (uc(iv) < 0.975) uc(iv) = 0.0; 
-	       if (uc(iv) > 1.0) uc(iv) = 1.0; 			
-	       if (h(iv) < m_config.m_thicknessThreshold) uc(iv) = 0.0;
-	     }
+	  // delete later, just for testing
+	  // And get rid of m_realVelocityMisfit
+	  for (BoxIterator bit(box);bit.ok();++bit)
+	    {
+	      const IntVect& iv = bit();
+	      if (uc(iv) < 0.975) uc(iv) = 0.0; 
+	      if (uc(iv) > 1.0) uc(iv) = 1.0; 			
+	      if (h(iv) < m_config.m_thicknessThreshold) uc(iv) = 0.0;
+	    }
 		 
-	   misfitreal *= uc;
+	  misfitreal *= uc;
 		
-		// Modify the velcoef weighting according to observed velocity
+	  // Modify the velcoef weighting according to observed velocity
 	  if (m_config.m_WeightVelocityMisfitCoefficient)
-	  {
+	    {
 	      FORT_WEIGHTVELC(CHF_FRA1(uc,0),
-				    CHF_CONST_FRA1(uo,0), CHF_CONST_FRA1(uo,1),
-			        CHF_CONST_REAL(m_config.m_VelocityMisfitCoefficientLo),
-			        CHF_CONST_REAL(m_config.m_VelocityMisfitCoefficientHi),
-			        CHF_CONST_REAL(m_config.m_VelocityObservedLo),
-			        CHF_CONST_REAL(m_config.m_VelocityObservedHi),
-				    CHF_BOX(box));
-	  }
+			      CHF_CONST_FRA1(uo,0), CHF_CONST_FRA1(uo,1),
+			      CHF_CONST_REAL(m_config.m_VelocityMisfitCoefficientLo),
+			      CHF_CONST_REAL(m_config.m_VelocityMisfitCoefficientHi),
+			      CHF_CONST_REAL(m_config.m_VelocityObservedLo),
+			      CHF_CONST_REAL(m_config.m_VelocityObservedHi),
+			      CHF_BOX(box));
+	    }
 
-	   for (BoxIterator bit(box);bit.ok();++bit)
-	     {
-	       const IntVect& iv = bit();
-	       if (uc(iv) < 0.975) uc(iv) = 0.0; 
-	       if (h(iv) < m_config.m_thicknessThreshold) uc(iv) = 0.0;
-	     }
+	  for (BoxIterator bit(box);bit.ok();++bit)
+	    {
+	      const IntVect& iv = bit();
+	      if (uc(iv) < 0.975) uc(iv) = 0.0; 
+	      if (h(iv) < m_config.m_thicknessThreshold) uc(iv) = 0.0;
+	    }
 
 	   for (int dir = 0; dir < SpaceDim; dir++)
 	     {
@@ -1282,91 +1299,53 @@ InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs()
 	   relmisfit *= uc;
 	   vobsnorm *= uc;
 	   
-	   adjRhs *= m_config.m_velMisfitCoefficient;
-	   misfit *= m_config.m_velMisfitCoefficient;
+	  adjRhs *= m_config.m_velMisfitCoefficient;
+	  misfit *= m_config.m_velMisfitCoefficient;
 
 	}
     }
   //computeDivUH();
   // rhs contribution due to velocity mismatch
-  //if (m_divuhMisfitCoefficient > TINY_NORM)
-  {
-    //need div(uh)
-    computeDivUH();
-    for (int lev=0; lev <= m_finest_level ;lev++)
-      {
-	for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
-	  {  
-	    FArrayBox& misfit = (*m_divuhMisfit[lev])[dit];
-	    misfit.copy ( (*m_divuh[lev])[dit] );
-	    misfit.minus( (*m_divuhObs[lev])[dit] );
-	    misfit.mult ( (*m_divuhCoef[lev])[dit] );
-	  }
-      }
-    
-    if (m_config.m_divuhMisfitSmooth >  m_dx[0][0])
-      {
-	// filter the misfit
-	const Real& scale = m_config.m_divuhMisfitSmooth;
-	int nouter = std::ceil(scale / m_dx[0][0]);
-	
-	for (int i = 0; i < nouter; i++)
-	  {
-	    int ninner = 1;
-	    for (int lev=0; lev <= m_finest_level ;lev++)
-	      {
-		
-		if (lev > 0)
-		  {
-		    PiecewiseLinearFillPatch li(m_grids[lev],  m_grids[lev-1], 1, m_domain[lev-1],m_refRatio[lev-1], 1);
-		    li.fillInterp(*m_divuhMisfit[lev],*m_divuhMisfit[lev-1],*m_divuhMisfit[lev-1],0.0,0, 0, 1);
-		  }
-		m_divuhMisfit[lev]->exchange();
-		
-		for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
-		  {
-		    Box box = m_grids[lev][dit];
-		    FArrayBox& misfit = (*m_divuhMisfit[lev])[dit];
-		    FArrayBox r(misfit.box(), 1); r.copy(misfit);
-		    FORT_CONVOLVECTRL( CHF_FRA(misfit),  CHF_FRA(r),CHF_BOX(box));
-		  }
-		
-		if (lev > 0)
-		  {
-		    CoarseAverage avg(m_grids[lev],1,m_refRatio[lev-1]);
-		    avg.averageToCoarse(*m_divuhMisfit[lev-1],*m_divuhMisfit[lev]);
-		  }
-		
-		m_divuhMisfit[lev]->exchange();
-		ninner *= m_refRatio[lev];
-	      }
-	  }
-      }// end filter
-    
-    // compute rhs
-    for (int lev=0; lev <= m_finest_level ;lev++)
-      {
-	for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
-	  {
-	    FArrayBox& adjRhs = (*m_adjRhs[lev])[dit];
-	    FArrayBox& misfit = (*m_divuhMisfit[lev])[dit];
-	    FArrayBox trhs(adjRhs.box(), SpaceDim);
-	    const FArrayBox& h = m_coordSys[lev]->getH()[dit];
-	    Box box = m_grids[lev][dit];
-	    //box.grow(-1); // can't work out second derivatives at box edges for now.
-	    trhs.setVal(0.0);
-	    FORT_ADJRHSMASSCTRL(CHF_FRA(trhs),
-				CHF_FRA1(misfit,0),
-				CHF_CONST_FRA1(h,0),
-				CHF_CONST_REAL(m_dx[lev][0]),
-				CHF_BOX(box));
-	    
-	    adjRhs.plus(trhs, m_config.m_divuhMisfitCoefficient);
-	    misfit *= misfit;
-	    misfit *=  m_config.m_divuhMisfitCoefficient;
-	  }
-      }
-  }
+  setToZero(m_divuhMisfit); // needs to be initialized in all cases
+  //if (m_config.m_divuhMisfitCoefficient > TINY_NORM) // avoid longish calculation of not needed
+    {
+      //need div(uh)
+      computeDivUH();
+      for (int lev=0; lev <= m_finest_level ;lev++)
+	{
+	  for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
+	    {  
+	      FArrayBox& misfit = (*m_divuhMisfit[lev])[dit];
+	      misfit.copy ( (*m_divuh[lev])[dit] );
+	      misfit.minus( (*m_divuhObs[lev])[dit] );
+	      misfit.mult ( (*m_divuhCoef[lev])[dit] );
+	    }
+	}
+      
+      // compute rhs & misfit
+      for (int lev=0; lev <= m_finest_level ;lev++)
+	{
+	  for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
+	    {
+	      FArrayBox& adjRhs = (*m_adjRhs[lev])[dit];
+	      FArrayBox& misfit = (*m_divuhMisfit[lev])[dit];
+	      FArrayBox trhs(adjRhs.box(), SpaceDim);
+	      const FArrayBox& h = m_coordSys[lev]->getH()[dit];
+	      Box box = m_grids[lev][dit];
+	      //box.grow(-1); // can't work out second derivatives at box edges for now.
+	      trhs.setVal(0.0);
+	      FORT_ADJRHSMASSCTRL(CHF_FRA(trhs),
+				  CHF_FRA1(misfit,0),
+				  CHF_CONST_FRA1(h,0),
+				  CHF_CONST_REAL(m_dx[lev][0]),
+				  CHF_BOX(box));
+	      
+	      adjRhs.plus(trhs, m_config.m_divuhMisfitCoefficient);
+	      misfit *= misfit;
+	      misfit *=  m_config.m_divuhMisfitCoefficient;
+	    }
+	}
+    }
 }
  
 
@@ -1375,7 +1354,10 @@ void InverseVerticallyIntegratedVelocitySolver::computeGradient
 (Vector<LevelData<FArrayBox>* >& a_g, 
  const  Vector<LevelData<FArrayBox>* >& a_x)
 {
-
+  
+  CH_TIME("InverseVerticallyIntegratedVelocitySolver::computeGradient");
+  pout() << " InverseVerticallyIntegratedVelocitySolver::computeGradient" << std::endl;
+  
   if (m_config.m_optimizeX0)
     {
       // grad w.r.t x_0 (basal friction)  = - adjVel * vel * C 
@@ -1500,6 +1482,10 @@ void InverseVerticallyIntegratedVelocitySolver::computeGradient
 /// update invalid cells (ghost + covered coarse cells)
 void InverseVerticallyIntegratedVelocitySolver::updateInvalid(const Vector<LevelData<FArrayBox>* >& a_x)
 {
+  CH_TIME("InverseVerticallyIntegratedVelocitySolver::updateInvalid");
+  pout() << " InverseVerticallyIntegratedVelocitySolver::updateInvalid" << std::endl;
+
+  
   for (int lev=m_finest_level; lev > 0 ;lev--)
     {
       CoarseAverage avg(m_grids[lev],a_x[lev]->nComp(),m_refRatio[lev-1]);
@@ -1539,6 +1525,9 @@ void InverseVerticallyIntegratedVelocitySolver::updateInvalid(const Vector<Level
 void InverseVerticallyIntegratedVelocitySolver::rankRedBlackSolution
 (const Vector<LevelData<FArrayBox>* >& a_x)
 {
+
+  CH_TIME("InverseVerticallyIntegratedVelocitySolver::rankRedBlackSolution");
+  pout() << " InverseVerticallyIntegratedVelocitySolver::rankRedBlackSolution" << std::endl;
   
   // rank reduction scheme: interpolate x0 from 'red' to 'black' and x1 from 'black' to 'red'
   for (int lev=0; lev <= m_finest_level;lev++)
@@ -1573,6 +1562,10 @@ void InverseVerticallyIntegratedVelocitySolver::rankRedBlackSolution
 void InverseVerticallyIntegratedVelocitySolver::rankRedBlackGradient
 (const Vector<LevelData<FArrayBox>* >& a_g)
 {
+
+  CH_TIME("InverseVerticallyIntegratedVelocitySolver::rankRedBlackGradient");
+  pout() << " InverseVerticallyIntegratedVelocitySolver::rankRedBlackGradient" << std::endl;
+  
   for (int lev = 0; lev <= m_finest_level; lev++)
     {
 
@@ -1634,6 +1627,11 @@ void InverseVerticallyIntegratedVelocitySolver::rankRedBlackGradient
 void InverseVerticallyIntegratedVelocitySolver::regularizeGradient
 (Vector<LevelData<FArrayBox>* >& a_g,  const  Vector<LevelData<FArrayBox>* >& a_x)
 {
+
+  CH_TIME("InverseVerticallyIntegratedVelocitySolver::regularizeGradient");
+  pout() << " InverseVerticallyIntegratedVelocitySolver::regularizeGradient" << std::endl;
+
+  
   for (int lev = 0; lev <= m_finest_level; lev++)
     {
       for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
@@ -1701,6 +1699,11 @@ void InverseVerticallyIntegratedVelocitySolver::regularizeGradient
 void InverseVerticallyIntegratedVelocitySolver::applyProjection
 (Vector<LevelData<FArrayBox>* >& a_g, const  Vector<LevelData<FArrayBox>* >& a_x)
 {
+
+ CH_TIME("InverseVerticallyIntegratedVelocitySolver::applyProjection");
+ pout() << "InverseVerticallyIntegratedVelocitySolver::applyProjection" << std::endl;
+
+  
   for (int lev = 0; lev <= m_finest_level; lev++)
     {
       for (DataIterator dit(m_grids[lev]);dit.ok();++dit)
@@ -1726,126 +1729,126 @@ void InverseVerticallyIntegratedVelocitySolver::applyProjection
 
 }
 
-    void InverseVerticallyIntegratedVelocitySolver::writeState
-      (const std::string& a_file, int a_counter,
-      const Vector<LevelData<FArrayBox>* >& a_x,
-      const Vector<LevelData<FArrayBox>* >& a_g) const
+void InverseVerticallyIntegratedVelocitySolver::writeState
+(const std::string& a_file, int a_counter,
+ const Vector<LevelData<FArrayBox>* >& a_x,
+ const Vector<LevelData<FArrayBox>* >& a_g) const
+{
+
+  
+  
+  pout() << "writing state to " << a_file << std::endl;
+  Vector<std::string> names;
+  names.resize(0);
+  names.push_back("X0");
+  names.push_back("X1");
+  names.push_back("C");
+  names.push_back("Cwshelf");
+  names.push_back("muCoef");
+  names.push_back("xVelb");
+  names.push_back("yVelb");
+  names.push_back("xVels");
+  names.push_back("yVels");
+  names.push_back("xVelo");
+  names.push_back("yVelo");
+  names.push_back("divuh");
+  names.push_back("divuho");
+  names.push_back("xAdjVel");
+  names.push_back("yAdjVel");
+  names.push_back("xAdjRhs");
+  names.push_back("yAdjRhs");
+  names.push_back("gradJC");
+  names.push_back("gradJMuCoef");
+  names.push_back("velc");
+  names.push_back("divuhc");
+  names.push_back("thickness");
+  names.push_back("Z_base");
+  names.push_back("Z_surface");
+  Vector<LevelData<FArrayBox>*> vdata(m_finest_level+1);
+  for (int lev = 0; lev <= m_finest_level;lev++)
     {
-    pout() << "writing state to " << a_file << std::endl;
-    Vector<std::string> names;
-    names.resize(0);
-    names.push_back("X0");
-    names.push_back("X1");
-    names.push_back("C");
-    names.push_back("Cwshelf");
-    names.push_back("muCoef");
-    names.push_back("xVelb");
-    names.push_back("yVelb");
-    names.push_back("xVels");
-    names.push_back("yVels");
-    names.push_back("xVelo");
-    names.push_back("yVelo");
-    names.push_back("divuh");
-    names.push_back("divuho");
-    names.push_back("xAdjVel");
-    names.push_back("yAdjVel");
-    names.push_back("xAdjRhs");
-    names.push_back("yAdjRhs");
-    names.push_back("gradJC");
-    names.push_back("gradJMuCoef");
-    names.push_back("velc");
-    names.push_back("divuhc");
-    names.push_back("thickness");
-    names.push_back("Z_base");
-    names.push_back("Z_surface");
-
-    Vector<LevelData<FArrayBox>*> vdata(m_finest_level+1);
-    for (int lev = 0; lev <= m_finest_level;lev++)
-      {
-    vdata[lev] = new LevelData<FArrayBox>(m_grids[lev],names.size(),IntVect::Zero);
-    LevelData<FArrayBox>& data = *vdata[lev];
-    int j = 0;
-    a_x[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    a_x[lev]->copyTo(Interval(1,1),data,Interval(j,j));j++;
-    m_C[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++; 
-    m_Cmasked[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++; 
-    m_muCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++; 
-    m_velb[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
-    m_vels[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
-    m_velObs[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
-    m_divuh[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    m_divuhObs[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    m_adjVel[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
-    m_adjRhs[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
-    a_g[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    a_g[lev]->copyTo(Interval(1,1),data,Interval(j,j));j++;
-    m_velCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    //  m_thkCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    m_divuhCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
-    m_coordSys[lev]->getH().copyTo(Interval(0,0),data,Interval(j,j));j++;
-    m_coordSys[lev]->getTopography().copyTo(Interval(0,0),data,Interval(j,j));j++;
-    m_coordSys[lev]->getSurfaceHeight().copyTo(Interval(0,0),data,Interval(j,j));j++;
-    //m_pointThicknessData[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+      vdata[lev] = new LevelData<FArrayBox>(m_grids[lev],names.size(),IntVect::Zero);
+      LevelData<FArrayBox>& data = *vdata[lev];
+      int j = 0;
+      a_x[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+      a_x[lev]->copyTo(Interval(1,1),data,Interval(j,j));j++;
+      m_C[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++; 
+      m_Cmasked[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++; 
+      m_muCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++; 
+      m_velb[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+      m_vels[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+      m_velObs[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+      m_divuh[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+      m_divuhObs[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+      m_adjVel[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+      m_adjRhs[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
+      a_g[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+      a_g[lev]->copyTo(Interval(1,1),data,Interval(j,j));j++;
+      m_velCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+      //  m_thkCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+      m_divuhCoef[lev]->copyTo(Interval(0,0),data,Interval(j,j));j++;
+      m_coordSys[lev]->getH().copyTo(Interval(0,0),data,Interval(j,j));j++;
+      m_coordSys[lev]->getTopography().copyTo(Interval(0,0),data,Interval(j,j));j++;
+      m_coordSys[lev]->getSurfaceHeight().copyTo(Interval(0,0),data,Interval(j,j));j++;
+      //m_pointThicknessData[lev]->copyTo(Interval(0,1),data,Interval(j,j+1));j+=2;
     
-  }
-    const Real dt = 1.0;
-    const Real time = Real(a_counter);
-  
-    for (int lev = vdata.size()-1;lev > 0 ; lev--)
-      {
-    LevelData<FArrayBox>& fine = *vdata[lev];
-    LevelData<FArrayBox>& crse = *vdata[lev-1];
-    CoarseAverage ca(m_grids[lev],fine.nComp(),m_refRatio[lev-1]);
-    ca.averageToCoarse(crse,fine);
-  }
-
-    m_amrIce->writeAMRHierarchyHDF5(a_file,m_grids,vdata,names, m_domain[0].domainBox(),
-      m_dx[0][0], dt, time , m_refRatio, vdata.size());
-  
-  
-    for (int lev = 0; lev <= m_finest_level;lev++)
-      {
-    delete vdata[lev];
-  }
-  
-  }
-
-
-
-    std::string InverseVerticallyIntegratedVelocitySolver::outerStateFile() const
+    }
+  const Real dt = 1.0;
+  const Real time = Real(a_counter);
+ 
+  for (int lev = vdata.size()-1;lev > 0 ; lev--)
     {
-    std::stringstream ss;
-    ss << m_config.m_outerStepFileNameBase;
-    
-
-    ss.width(2);ss.fill('0');ss << m_finest_level;
-    ss.width(0); ss << "lev.";
-
-    ss.width(6);ss.fill('0');ss << int(m_time/m_config.m_dtTypical);
-    //ss.width(0); ss << "t.";
-    
-    ss.width(6);ss.fill('0');ss << m_outerCounter;
-    ss.width(0);ss << ".2d.hdf5";
-    return ss.str(); 
-  }    
-
-    std::string InverseVerticallyIntegratedVelocitySolver::innerStateFile() const
+      LevelData<FArrayBox>& fine = *vdata[lev];
+      LevelData<FArrayBox>& crse = *vdata[lev-1];
+      CoarseAverage ca(m_grids[lev],fine.nComp(),m_refRatio[lev-1]);
+      ca.averageToCoarse(crse,fine);
+    }
+ 
+  m_amrIce->writeAMRHierarchyHDF5(a_file,m_grids,vdata,names, m_domain[0].domainBox(),
+   				  m_dx[0][0], dt, time , m_refRatio, vdata.size());
+  
+  for (int lev = 0; lev <= m_finest_level;lev++)
     {
-    std::stringstream ss;
-    ss << m_config.m_innerStepFileNameBase;
-    ss.width(2);ss.fill('0');ss << m_finest_level;
-    ss.width(0); ss << "lev.";
+      delete vdata[lev];
+    }
+}
 
-    ss.width(6);ss.fill('0');ss << int(m_time*12.0);
-    //ss.width(0); ss << "t.";
+
+
+std::string InverseVerticallyIntegratedVelocitySolver::outerStateFile() const
+{
+  std::stringstream ss;
+  ss << m_config.m_outerStepFileNameBase;
+  
+
+  ss.width(2);ss.fill('0');ss << m_finest_level;
+  ss.width(0); ss << "lev.";
     
-    ss.width(6);ss.fill('0');ss << m_innerCounter;
-    ss.width(0);ss << ".2d.hdf5";
+  ss.width(6);ss.fill('0');ss << int(m_time/m_config.m_dtTypical);
+  //ss.width(0); ss << "t.";
+    
+  ss.width(6);ss.fill('0');ss << m_outerCounter;
+  ss.width(0);ss << ".2d.hdf5";
+  return ss.str(); 
+}    
+
+std::string InverseVerticallyIntegratedVelocitySolver::innerStateFile() const
+{
+  std::stringstream ss;
+  ss << m_config.m_innerStepFileNameBase;
+  ss.width(2);ss.fill('0');ss << m_finest_level;
+  ss.width(0); ss << "lev.";
+
+  ss.width(6);ss.fill('0');ss << int(m_time*12.0);
+  //ss.width(0); ss << "t.";
+    
+  ss.width(6);ss.fill('0');ss << m_innerCounter;
+  ss.width(0);ss << ".2d.hdf5";
 
 
 
-    return ss.str(); 
-  }
+  return ss.str(); 
+}
 
 
 
