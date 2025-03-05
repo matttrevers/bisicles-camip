@@ -21,6 +21,7 @@ c---------------------------------------------------
      &     CHF_FRA1[misfit],
      &     CHF_FRA1[relmisfit],
      &     CHF_FRA1[misfitreal],
+     &     CHF_FRA1[vobsnorm],
      &     CHF_CONST_FRA1[umx],CHF_CONST_FRA1[umy],
      &     CHF_CONST_FRA1[uox],CHF_CONST_FRA1[uoy],
      &     CHF_BOX[box] )
@@ -34,6 +35,7 @@ c---------------------------------------------------
       
       misfit(CHF_AUTOIX[i]) = (uo-um)**two
       misfitreal(CHF_AUTOIX[i]) = (uo-um)**two
+      vobsnorm(CHF_AUTOIX[i]) = uo**two
       relmisfit(CHF_AUTOIX[i]) = (misfit(CHF_AUTOIX[i])/(TINY_NORM + uo)**two)
 c      misfit(CHF_AUTOIX[i]) = (uo-um)
       t = (uo/(TINY_NORM + um)-1.0)

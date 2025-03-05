@@ -29,13 +29,9 @@
 #include "AmrIceBase.H"
 #include "NamespaceHeader.H"
 
-#include <vector>
-
 #define CCOMP 0
 #define MUCOMP 1
 #define NXCOMP MUCOMP + 1
-
-
 
 InverseVerticallyIntegratedVelocitySolver::Configuration::Configuration()
   :m_velObs_c(NULL),
@@ -101,6 +97,7 @@ InverseVerticallyIntegratedVelocitySolver::~InverseVerticallyIntegratedVelocityS
   free(m_velocityMisfit);
   free(m_velocityRelativeMisfit);
   free(m_realVelocityMisfit);
+  free(m_observedVelocityNorm);
   free(m_divuhMisfit);
 }
 
@@ -387,6 +384,7 @@ InverseVerticallyIntegratedVelocitySolver::define
   create(m_velocityMisfit,1,IntVect::Unit);
   create(m_velocityRelativeMisfit,1,IntVect::Unit);
   create(m_realVelocityMisfit,1,IntVect::Unit);
+  create(m_observedVelocityNorm,1,IntVect::Unit);
 
   create(m_velb,SpaceDim,IntVect::Unit);
   create(m_adjVel,SpaceDim,IntVect::Unit);
@@ -562,7 +560,7 @@ int InverseVerticallyIntegratedVelocitySolver::solve
 	  CGminIter = -1;			// MJT
 	}
   
-      pout() << " Optimization: CGmaxIter = " << CGmaxIter << "  m_time = " << m_time << "  m_prev_time = " << m_prev_time  << std::endl;
+      pout() << " Optimization: CGmaxIter = " << CGmaxIter << "  m_time = " << m_time << "  m_prev_time = " << m_prev_time  << "  m_interval = " << m_config.m_minTimeBetweenOptimizations  << std::endl;
       
       // attempt the optimization
       //CGOptimize(*this ,  X , CGmaxIter , m_config.m_CGtol , m_config.m_CGhang,										//MJT
@@ -748,8 +746,10 @@ InverseVerticallyIntegratedVelocitySolver::mapX(const Vector<LevelData<FArrayBox
   updateInvalid(a_x);
 
   if (m_config.m_rankRedBlack)
+  //if ((m_config.m_rankRedBlack) && (m_outerCounter > 1))
     {
       rankRedBlackSolution(a_x);
+	  //pout() << " CGO::red-black: iter " << m_outerCounter <<  std::endl;
     }
   
   // convert a_x -> C, muCoef
@@ -933,6 +933,7 @@ InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient
   Real vobj = computeSum(m_velocityMisfit, m_refRatio, m_dx[0][0]);
   Real vobjrel = computeSum(m_velocityRelativeMisfit, m_refRatio, m_dx[0][0]);
   Real vobjreal = computeSum(m_realVelocityMisfit, m_refRatio, m_dx[0][0]);
+  Real vobsnorm = computeSum(m_observedVelocityNorm, m_refRatio, m_dx[0][0]);
   Real hobj = computeSum(m_divuhMisfit, m_refRatio, m_dx[0][0]); 
   Real sumGradCSq = computeSum(m_gradCSq,m_refRatio, m_dx[0][0]);
   Real sumGradMuSq = computeSum(m_gradMuCoefSq,m_refRatio, m_dx[0][0]);
@@ -954,7 +955,8 @@ InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient
   
   pout() << ((a_inner)?"inner: ":"outer: ") << " ||velocity misfit||^2 = " << vobj 
 	 << " ||relative misfit||^2 = " << vobjrel
-	 << " ||actual misfit||^2 = " << vobjreal
+	 //<< " ||actual misfit||^2 = " << vobjreal
+	 << " ||vobs norm||^2 = " << vobsnorm
 	 << " ||divuh misfit||^2 = " << hobj
 	 << " || grad C ||^2 = " << sumGradCSq
 	 << " || grad muCoef ||^2 = " << sumGradMuSq
@@ -1202,6 +1204,7 @@ InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs()
 	  FArrayBox& misfit = (*m_velocityMisfit[lev])[dit];
 	  FArrayBox& misfitreal = (*m_realVelocityMisfit[lev])[dit];
 	  FArrayBox& relmisfit = (*m_velocityRelativeMisfit[lev])[dit];
+	  FArrayBox& vobsnorm = (*m_observedVelocityNorm[lev])[dit];
 	  const FArrayBox& um = (*m_vels[lev])[dit];
 	  const FArrayBox& uo = (*m_velObs[lev])[dit];
 	  const FArrayBox& h = m_coordSys[lev]->getH()[dit];
@@ -1214,6 +1217,7 @@ InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs()
 				   CHF_FRA1(misfit,0),
 				   CHF_FRA1(relmisfit,0),
 				   CHF_FRA1(misfitreal,0),
+				   CHF_FRA1(vobsnorm,0),
 				   CHF_CONST_FRA1(um,0), CHF_CONST_FRA1(um,1),
 				   CHF_CONST_FRA1(uo,0), CHF_CONST_FRA1(uo,1),
 				   CHF_BOX(box));
@@ -1276,6 +1280,7 @@ InverseVerticallyIntegratedVelocitySolver::computeAdjointRhs()
 	     }
 	   misfit *= uc;
 	   relmisfit *= uc;
+	   vobsnorm *= uc;
 	   
 	   adjRhs *= m_config.m_velMisfitCoefficient;
 	   misfit *= m_config.m_velMisfitCoefficient;
