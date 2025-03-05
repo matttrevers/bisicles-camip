@@ -655,12 +655,18 @@ void IceUtility::computeFaceVelocity
     }
 
   grownVel.exchange();
-      
+  if (a_iceThicknessIBC != NULL)
+    {
+      // making up for missing constness elsewhere. \todo fix that
+      IceThicknessIBC* tmp = const_cast<IceThicknessIBC*>(a_iceThicknessIBC);
+      tmp->velocityGhostBC(grownVel, a_coordSys,grids.physDomain(), 0.0);
+    }
+  
   //default calculation : average to faces 
   CellToEdge(grownVel, a_faceVelAdvection);
 
   //correct margins, where the face average does not make sense
-  //IceUtility::extrapVelocityToMargin(a_faceVelAdvection, grownVel, a_coordSys);
+  IceUtility::extrapVelocityToMargin(a_faceVelAdvection, grownVel, a_coordSys);
 
 #if BISICLES_Z == BISICLES_LAYERED
   //for layered models (SSA,L1L2) assume du/dz = 0
