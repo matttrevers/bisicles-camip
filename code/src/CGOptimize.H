@@ -15,6 +15,7 @@
 
 #define CGOPT_LINE_SEARCH_SECANT 0
 #define CGOPT_LINE_SEARCH_BISECTION 1
+#define CGOPT_LINE_SEARCH_REGULAR_FALSI 2
 
 #include "parstream.H"
 #include "REAL.H"
@@ -98,7 +99,6 @@ void bisectionLineSearch
 (ObjectiveWithGradient<X>& a_F, X& x, X& r, X& d, X& y, X& p, Real a_fx, 
  int a_maxIter, Real a_initialStep, Real a_stepMaxGrow, Real a_tol)
 {
-
   Real a, fa, b, fb, c, fc, fm, fp, f0, s0;
   int iter(0);
   a = 0.0;
@@ -106,9 +106,26 @@ void bisectionLineSearch
   f0 = fa;
   s0 = a_initialStep;
   b = a;
-  //walk the line until fb < 0 (since fa > 0) 
+  Real fb_prev = 0.0;
+  Real b_prev;
+  Real mult = 2.0;
+  bool doubling = true;
+  //bool doubling = false;
+  //walk the line by doubling until fb < 0 (since fa > 0) 
   do {
-    b += s0;
+	b_prev = b;
+	if (iter == 0) b += s0;
+	else {
+		if ((fb > fb_prev) && (iter > 1)) {
+			b = b_prev;
+			doubling = false;
+			iter -= 2;
+		    pout() << " ... initial bisection: too far, switching to single steps " << std::endl;
+		}
+		else b *= mult;
+	}
+	fb_prev = fb;
+    //b += s0;
     a_F.assign(y, x);
     a_F.incr(y, d, b);
     a_F.computeObjectiveAndGradient(fm,fp,p,y,true);
@@ -120,7 +137,36 @@ void bisectionLineSearch
 	   << " s = " << b << " f(x + sd) = " << fm + fp << std::endl;
 
     iter++;
-  } while ( (iter < a_maxIter) && (fb > 0.0) );
+  } while ( (iter < a_maxIter) && (fb > 0.0) && (doubling));
+  
+  //walk the line in single steps until fb < 0 (since fa > 0) 
+	//Real step = s0;
+	Real step = (iter > 1) ? b/10 : s0;
+	//if (iter > 1) step = s0/2;
+  if (fb > 0.0) do {
+	b_prev = b;
+	if (iter == 0) step = s0/10.0;
+	if ((iter > 1) && (fb > fb_prev)) { step *= -0.5; pout() << " ... initial bisection: changing search direction " << std::endl;}
+    fb_prev = fb;
+    b += step;
+	a_F.assign(y, x);
+    a_F.incr(y, d, b);
+    a_F.computeObjectiveAndGradient(fm,fp,p,y,true);
+    fb = -a_F.dotProduct(p,r);
+	
+	// Check the gradient sign. If negative, search backwards
+
+    pout() << " ... initial bisection iter " << iter
+	   << " f'(x + sd).f'(x) = " << fb
+	   << " f'(x).f'(x) = " << f0
+	   << " s = " << b << " f(x + sd) = " << fm + fp << std::endl;
+
+    iter++;
+  } while ( (iter < a_maxIter) && (fb > 0.0) && (!doubling) );
+	
+  if (fb < 0.0) {a = std::min(b,b_prev); b = std::max(b,b_prev); fa = (b<b_prev)?fb:fb_prev;}
+  
+  if (iter < a_maxIter) iter = 0;
 
   do {
     c = 0.5*(a + b); //midpoint
@@ -133,7 +179,123 @@ void bisectionLineSearch
     pout() << " ... bisection iter " << iter 
 	   << "  f'(x + sd).f'(x) = " << fc
 	   << " f'(x).f'(x) = " << f0
-	   << " s = " << c << " f(x + sd) = " << fm + fp << std::endl;
+	   << " s = " << c << " f(x + sd) = " << fm + fp << " a = " << a << " b = " << b << std::endl;
+    
+      if (std::signbit(fc) == std::signbit(fa))
+      {
+	a = c;
+	fa = fc;
+      }
+    else
+      {
+	b = c;
+	fb = fc;
+      }
+    iter++;
+    
+  } while ( (iter < a_maxIter) && (Abs(fc) > sqr(a_tol) * Abs(f0)) && (Abs(c) > a_tol * s0));
+  a_F.assign(x, y);
+
+}
+
+
+
+/// regular falsi method: find y = x + s*d such that |f'(y).f'(x)| << f'(x).f'(x)
+/**
+   x - initial point
+   r - input - -f'(x) (steepest descent) 
+   d - input - (preconditioned) search direction / steepest descent ( d = M^-1 r)
+   y - output
+   p - workspace
+   a_fx - f(x) (where f' is the gradient of scalar f > 0)
+
+ */
+template < class X>
+void regularFalsiLineSearch
+(ObjectiveWithGradient<X>& a_F, X& x, X& r, X& d, X& y, X& p, Real a_fx, 
+ int a_maxIter, Real a_initialStep, Real a_stepMaxGrow, Real a_tol)
+{
+
+  Real a, fa, b, fb, c, fc, fm, fp, f0, s0;
+  int iter(0);
+  a = 0.0;
+  fa = a_F.dotProduct(r,r);
+  f0 = fa;
+  s0 = a_initialStep;
+  b = a;
+  Real fb_prev = 0.0;
+  Real b_prev;
+  Real mult = 2.0;
+  bool doubling = true;
+  //bool doubling = false;
+  //walk the line by doubling until fb < 0 (since fa > 0) 
+  do {
+	b_prev = b;
+	if (iter == 0) b += s0;
+	if ((fb > fb_prev) && (iter > 1)) {
+		b = b_prev;
+		doubling = false;
+		iter -= 2;
+		pout() << " ... initial reg falsi: too far, switching to single steps " << std::endl;
+	}
+	else b *= mult;
+	fb_prev = fb;
+    //b += s0;
+    a_F.assign(y, x);
+    a_F.incr(y, d, b);
+    a_F.computeObjectiveAndGradient(fm,fp,p,y,true);
+    fb = -a_F.dotProduct(p,r);
+
+    pout() << " ... initial reg falsi iter " << iter
+	   << " f'(x + sd).f'(x) = " << fb
+	   << " f'(x).f'(x) = " << f0
+	   << " s = " << b << " f(x + sd) = " << fm + fp << std::endl;
+
+    iter++;
+  } while ( (iter < a_maxIter) && (fb > 0.0) && (doubling));
+  
+  //walk the line in single steps until fb < 0 (since fa > 0) 
+	//Real step = s0;
+	Real step = (iter > 1) ? b/10 : s0;
+	//if (iter > 1) step = s0/2;
+  if (fb > 0.0) do {
+	b_prev = b;
+	if (iter == 0) step = s0/10.0;
+	if ((iter > 1) && (fb > fb_prev)) { step *= -0.5; pout() << " ... initial reg falsi: changing search direction " << std::endl;}
+    fb_prev = fb;
+    b += step;
+	a_F.assign(y, x);
+    a_F.incr(y, d, b);
+    a_F.computeObjectiveAndGradient(fm,fp,p,y,true);
+    fb = -a_F.dotProduct(p,r);
+	
+	// Check the gradient sign. If negative, search backwards
+
+    pout() << " ... initial reg falsi iter " << iter
+	   << " f'(x + sd).f'(x) = " << fb
+	   << " f'(x).f'(x) = " << f0
+	   << " s = " << b << " f(x + sd) = " << fm + fp << std::endl;
+
+    iter++;
+  } while ( (iter < a_maxIter) && (fb > 0.0) && (!doubling) );
+	
+  if (fb < 0.0) {a = std::min(b,b_prev); b = std::max(b,b_prev); fa = (b<b_prev)?fb:fb_prev;}
+  else {a = std::min(b,b_prev); b = std::max(b,b_prev); fa = (b<b_prev)?fb:fb_prev;}
+  if (iter < a_maxIter) iter = 0;
+
+  do {
+    //c = 0.5*(a + b); //midpoint
+	c = a - (fa*(b-a)) / (fb - fa); // linearly interpolated root
+    a_F.assign(y, x);
+    a_F.incr(y, d, c);
+    a_F.computeObjectiveAndGradient(fm,fp,p,y,true);
+
+    fc = -a_F.dotProduct(p,r);
+    
+    pout() << " ... reg falsi iter " << iter 
+	   << "  f'(x + sd).f'(x) = " << fc
+	   << " f'(x).f'(x) = " << f0
+	   << " s = " << c << " f(x + sd) = " << fm + fp << " a = " << a << " b = " << b << std::endl;
     
       if (std::signbit(fc) == std::signbit(fa))
       {
@@ -327,6 +489,11 @@ int CGOptimize(ObjectiveWithGradient<X>& a_F, X& a_x,
       if (a_lineSearchMethod == CGOPT_LINE_SEARCH_BISECTION)
 	{
 	  bisectionLineSearch(a_F, x, r, d, y, p, fm+fp, a_lineSearchMaxIter, 
+			      a_lineSearchInitialStep, a_lineSearchStepMaxGrow, a_lineSearchTol);
+	}
+      else if (a_lineSearchMethod == CGOPT_LINE_SEARCH_REGULAR_FALSI)
+	{
+	  regularFalsiLineSearch(a_F, x, r, d, y, p, fm+fp, a_lineSearchMaxIter, 
 			      a_lineSearchInitialStep, a_lineSearchStepMaxGrow, a_lineSearchTol);
 	}
       else

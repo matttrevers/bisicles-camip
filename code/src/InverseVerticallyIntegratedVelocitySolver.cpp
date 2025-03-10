@@ -974,9 +974,6 @@ InverseVerticallyIntegratedVelocitySolver::computeObjectiveAndGradient
   Real sumGradX1Sq =computeSum(m_gradXSq,m_refRatio, m_dx[0][0], Interval(1,1));
   Real normX0 = computeNorm(a_x,m_refRatio, m_dx[0][0], Interval(0,0));
   Real normX1 = computeNorm(a_x,m_refRatio, m_dx[0][0], Interval(1,1));
-  
-  
-  //const FArrayBox& uo = (*m_velObs[lev])[dit];			// MJT
 
   a_fm = vobj + hobj;
   a_fp =  m_config.m_gradCsqRegularization * sumGradCSq
