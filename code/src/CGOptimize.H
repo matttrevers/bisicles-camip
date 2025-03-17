@@ -140,7 +140,7 @@ void bisectionLineSearch
     //b += s0;
     a_F.assign(y, x);
     a_F.incr(y, d, b);
-    a_F.computeObjectiveAndGradient(Fm,Fp,w,y,true);
+    a_F.computeObjectiveAndGradient(Fm,Fp,w,y,iter,true);
     fb = -a_F.dotProduct(w,d);
 
     pout() << " ... initial bisection iter " << iter
@@ -268,7 +268,7 @@ void regularFalsiLineSearch
     //b += s0;
     a_F.assign(y, x);
     a_F.incr(y, d, b);
-    a_F.computeObjectiveAndGradient(fm,fp,p,y,true);
+    a_F.computeObjectiveAndGradient(fm,fp,p,y,iter,true);
     fb = -a_F.dotProduct(p,d);
 
     pout() << " ... initial reg falsi iter " << iter
@@ -289,7 +289,7 @@ void regularFalsiLineSearch
     b += step;
 	a_F.assign(y, x);
     a_F.incr(y, d, b);
-    a_F.computeObjectiveAndGradient(fm,fp,p,y,true);
+    a_F.computeObjectiveAndGradient(fm,fp,p,y,iter,true);
     fb = -a_F.dotProduct(p,d);
 	
 	// Check the gradient sign. If negative, search backwards
@@ -312,7 +312,7 @@ void regularFalsiLineSearch
 	c = a - (fa*(b-a)) / (fb - fa); // linearly interpolated root
     a_F.assign(y, x);
     a_F.incr(y, d, c);
-    a_F.computeObjectiveAndGradient(fm,fp,p,y,true);
+    a_F.computeObjectiveAndGradient(fm,fp,p,y,iter,true);
 
     fc = -a_F.dotProduct(p,d);
     
