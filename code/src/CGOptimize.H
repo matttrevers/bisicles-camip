@@ -14,6 +14,7 @@
 #define _CGOPTIMIZE_H_
 
 #define CGOPT_LINE_SEARCH_SECANT 0
+#define CGOPT_LINE_SEARCH_SECANTV2 20
 #define CGOPT_LINE_SEARCH_BISECTION 1
 #define CGOPT_LINE_SEARCH_REGULAR_FALSI 2
 
@@ -93,17 +94,21 @@ public:
 
 /// bisection method: find y = x + s*d such that |f'(y).f'(x)| << f'(x).f'(x)
 /**
-   x - initial point
-   r - input - -f'(x) (steepest descent) 
-   d - input - (preconditioned) search direction / steepest descent ( d = M^-1 r)
-   y - output
-   w - workspace
+
+   Secant method that assumes  f'(x).f'(x) > 0 and d is a descent direction for
+   |f'(y).f'(x)|, so that s > 0.  
+
+   x - input - initial x: ouptut y 
+   r - input - f'(x) : output f'(y)
+   d - input - search direction
+   v - workspace vector
+   w - workspace vector
    a_fx - f(x) (where f' is the gradient of scalar f > 0)
 
  */
 template < class X>
 void bisectionLineSearch
-(ObjectiveWithGradient<X>& a_F, X& x, X& r, X& d, X& y, X& w, Real a_fx, 
+(ObjectiveWithGradient<X>& a_F, X& x, X& r, X& d, X& v, X& w, Real a_fx, 
  int a_maxIter, Real a_initialStep, Real a_stepMaxGrow, Real a_tol)
 {
 
@@ -138,9 +143,9 @@ void bisectionLineSearch
 	else b *= mult;
 	fb_prev = fb;
     //b += s0;
-    a_F.assign(y, x);
-    a_F.incr(y, d, b);
-    a_F.computeObjectiveAndGradient(Fm,Fp,w,y,iter,true);
+    a_F.assign(v, x);
+    a_F.incr(v, d, b);
+    a_F.computeObjectiveAndGradient(Fm,Fp,w,v,iter,true);
     fb = -a_F.dotProduct(w,d);
 
     pout() << " ... initial bisection iter " << iter
@@ -159,9 +164,9 @@ void bisectionLineSearch
 	if ((iter > 1) && (fb > fb_prev)) { step *= -0.5; pout() << " ... initial reg falsi: changing search direction " << std::endl;}
     fb_prev = fb;
     b += step;
-    a_F.assign(y, x);
-    a_F.incr(y, d, b);
-    a_F.computeObjectiveAndGradient(Fm,Fp,w,y,iter,true);
+    a_F.assign(v, x);
+    a_F.incr(v, d, b);
+    aa_F.computeObjectiveAndGradient(Fm,Fp,w,v,iter,true);
     fb = -a_F.dotProduct(w,d);
 
     pout() << " ... bisection: searching for a bracket: iter " << iter
@@ -193,12 +198,12 @@ void bisectionLineSearch
   b = std::max(b,b_prev); 
   fa = (b<b_prev)?fb:fb_prev;
   if (iter < a_maxIter) iter = 0;
-  
+
   do {
     c = 0.5*(a + b); //midpoint
-    a_F.assign(y, x);
-    a_F.incr(y, d, c);
-    a_F.computeObjectiveAndGradient(Fm,Fp,w,y,iter,true);
+    a_F.assign(v, x);
+    a_F.incr(v, d, c);
+    a_F.computeObjectiveAndGradient(Fm,Fp,w,v,iter,true);
 
     fc = -a_F.dotProduct(w,d);
     
@@ -220,7 +225,7 @@ void bisectionLineSearch
     iter++;
     
   } while ( (iter < a_maxIter) && (Abs(fc) > sqr(a_tol) * Abs(f0)) && (Abs(b-a) > a_tol * s0));
-  a_F.assign(x, y);
+  a_F.assign(x, v);
 
 }
 
@@ -340,19 +345,126 @@ void regularFalsiLineSearch
 
 
 
-/// Secant method: find y = x + s*d such that |f'(y).f'(x)| << f'(x).f'(x)
+/// Secant method: find y = x + s * d such that f'(y).f'(x) << f'(x).f'(x)
 /**
-   x - initial point
-   r - input - ||f'(x)||^2
-   d - input - search direction
-   y - output
-   p - workspace
-   a_fx - f(x) (where f' is the gradient of scalar f > 0)
+
+   Secant method that assumes  -f'(x).f'(x) > 0 and d is a descent direction for
+   - f'(y).f'(x), so that s > 0.  
+
+   x - input: initial x / ouptut y 
+   r - input: -f'(x) : output f'(y)
+   d - input: - search direction
+   v - workspace vector
+   w - workspace vector
+   a_fx: input f(x) (where f' is the gradient of scalar f > 0)
+
+   V2 is a 'vanilla' secant method, apart from storing/updating 
+   brackets a, b, where - f'(x + ad).d > 0 and - f'(x + bd).d < 0,
+   and enforcing a < s < b (attempt to prevent divergence)
 
  */
+
+template < class X>
+void secantLineSearchV2
+(ObjectiveWithGradient<X>& a_F, X& x, X& r, X& d, X& v, X& w, Real a_fx, 
+ int a_maxIter, Real a_initialStep, Real a_stepMaxGrow, Real a_tol)
+{
+
+  Real a, b, m, s, s_prev, s_best, ds; // brackets a,b,current & previous point s, best s, increment ds
+  Real fa, fb, fs, fs_prev, fs_best, df; // f'(x + s d).d @ s = a,b,s, s_prev, s_best, difference df
+  Real Fm, Fp; // misfit and penalty norms (F = Fm + Fp)
+  Real f0, s0; // initial values
+  int iter(0);
+  bool b_exists(false);
+  
+  fa =  a_F.dotProduct(r,d); a = 0.0; f0 = fa; fs_prev=fa; fs_best = fa;
+  b = 1.2345678e+300; fb = -b; // dummy valued for b, fb s.t b > 0,  f(b) < 0 
+  s = a_initialStep; s0 = s; ds = s; s_prev = 0.0; s_best = s;
+
+  
+  do {
+    a_F.assign(v, x);
+    a_F.incr(v, d, s);
+    a_F.computeObjectiveAndGradient(Fm,Fp,r,v,iter,true);
+    fs = -a_F.dotProduct(r,d);
+
+    if (Abs(fs) < Abs(fs_best))
+      {
+	fs_best = fs;
+	s_best = s;
+      }
+
+    pout() <<  " ... secant v2 iteration " << iter << " f'(x[0]+ s d).d = " << fs
+	   << " s = " << s << " ds = " << ds << " f(x[0] + sd) = " << Fm + Fp
+	   << " (" << a << " = a " << " < s < b = " << b << ")"
+	   << std::endl;
+
+    if (b_exists && (fs > 0) && (a < s))
+      {
+    	//update the near bracket (a);
+    	fa = fs; a = s;
+      }
+    else if ((fs < 0) && (b > s))
+      {
+    	// update the far bracket (b).
+    	b_exists = true;
+    	fb = fs; b = s;
+      }
+
+    // vanilla secant step
+    
+    df = fs - fs_prev;
+    if (Abs(df) > 1.0e-16)
+      {
+	s -= ds * fs / df;
+      }
+    else
+      {
+     	// not likely, but possible....
+     	s = 0.5 * (s_prev + (b_exists && (-fb < fa))?b:a);
+      }
+    
+    // Switch to bisection a la Dekker (not Brent...) 
+    if ((b_exists) && ((s < a) || (s > b)))
+      {
+    	s = 0.5 * (a+b);
+      }
+
+    ds = s - s_prev;
+    s_prev = s;
+    fs_prev = fs;
+    
+    pout() <<  " ... ... secant v2 test  " << iter 
+    	   << " s = " << s
+    	   << " ds = " << ds
+    	   << " sqr(ds) * f0 = " << sqr(ds) * f0
+    	   << std::endl;
+   
+    iter++;
+    
+  } while (iter < a_maxIter  && (sqr(ds) * f0 > sqr(a_tol)));
+  
+  a_F.incr(x, d, s_best);
+  
+}
+
+/// Secant method: find y = x + s * d such that f'(y).f'(x) << f'(x).f'(x)
+/**
+
+   Secant method that assumes  f'(x).f'(x) > 0 and d is a descent direction for
+   |f'(y).f'(x)|, so that s > 0.  
+
+   x - input - initial x: ouptut y 
+   r - input - f'(x) : output f'(y)
+   d - input - search direction
+   v - workspace vector
+   w - workspace vector
+   a_fx - f(x) (where f' is the gradient of scalar f > 0)
+
+ */  
 template < class X>
 void secantLineSearch
-(ObjectiveWithGradient<X>& a_F, X& x, X& r, X& d, X& y, X& p, Real a_fx, 
+(ObjectiveWithGradient<X>& a_F, X& x, X& r, X& d, X& v, X& w, Real a_fx, 
  int a_maxIter, Real a_initialStep, Real a_stepMaxGrow, Real a_tol)
 {
 
@@ -361,47 +473,50 @@ void secantLineSearch
   Real eta = -deltaD;
   Real initialStep = a_initialStep;
   Real alpha = -initialStep;
-  a_F.assign(y,x);
-  a_F.incr(y,d,initialStep);
+  a_F.assign(v,x);
+  a_F.incr(v,d,initialStep);
   Real fms,fps;
-  a_F.computeObjectiveAndGradient(fms,fps,p,y,0,true);
-  Real etaPrev = a_F.dotProduct(p,d);
+  a_F.computeObjectiveAndGradient(fms,fps,w,v,0,true);
+  Real etaPrev = a_F.dotProduct(w,d);
   
   pout() << " ... initial secant ||f'(x+sd).d||^2 = " 
-	 << -etaPrev << " s = " << initialStep << " f(x+sd) = " << fms << std::endl;
-
+	 << -etaPrev << " s = " << initialStep
+	 << " f(x+sd) = " << fms + fps
+	 << " f(x) = " << a_fx << std::endl;
+    
   int iter = 0;
   while ( (fms + fps <  a_fx) && (-etaPrev > -eta) && iter < a_maxIter)
     {
       //we have a problem, because although we have a descent direction in the  objective
       //function f , we have an ascent direction for f'(x+sd).d. For now, just walk along d till
       // we do have descent in both, then start the secant method offset by alpha + a_initialStep
-      pout() << " d is a descent direction for f(x+sd) but not for f'(x+sd).d  " 
-	     << " so walking the line (remind SLC to look up a better method) " << std::endl;
+      pout() << " ... secant: d is a descent direction for f(x+sd) but not for f'(x+sd).d" 
+	     << ". Walking the line (remind SLC to look up a better method) " << std::endl;
       alpha -= initialStep;
-      a_F.incr(y,d,initialStep);
-      a_F.computeObjectiveAndGradient(fms,fps,p,y,0,true);
+      a_F.incr(v,d,initialStep);
+      a_F.computeObjectiveAndGradient(fms,fps,w,v,0,true);
       eta = etaPrev;
-      etaPrev = a_F.dotProduct(p,d);
+      etaPrev = a_F.dotProduct(w,d);
       pout() << " ... initial secant f'(x+ sd).d = " 
-	     << -etaPrev << " s = " << alpha << " f(x+ sd) = " << a_fx << std::endl;
+	     << -etaPrev << " s = " << alpha << " f(x+ sd) = " << fms + fps << std::endl;
       iter++;
     }
   
   iter = 0;
   while ( (fms + fps >  a_fx) && iter < a_maxIter )
     {
-      // here we have an ascent direction the objective function. Try reducing the step.
-      // this can of course be a happy failure
-      pout() << " d is a not descent direction for f(x+sd), reducing s ";
-      a_F.incr(y,d,-0.5*initialStep);
+      // here we have an ascent direction in the objective function.
+      // Try reducing the step. A happy failure if we are actually at the minimum
+      pout() << " ... secant: d is a not descent direction for f(x+sd), reducing s " << std::endl;
+      a_F.incr(v,d,-0.5*initialStep);
       initialStep *= 0.5;
       alpha = - initialStep;
-      a_F.computeObjectiveAndGradient(fms,fps,p,y,0,true);
+      a_F.computeObjectiveAndGradient(fms,fps,w,v,0,true);
       eta = etaPrev;
-      etaPrev = a_F.dotProduct(p,d);
+      etaPrev = a_F.dotProduct(w,d);
       pout() << " ... initial secant f'(x+ sd).d = " 
-	     << -etaPrev << " s = " << initialStep << " f(x+ sd) = " << a_fx << std::endl;
+	     << -etaPrev << " s = " << initialStep << " f(x+ sd) = " << fms + fps
+	     << "  f(x) = " << a_fx << std::endl;
       iter++;
     }
   
@@ -412,6 +527,7 @@ void secantLineSearch
   
   alpha = -a_initialStep;
   
+  // the actual secant method, following preamble
   do {
     
     if (j > 0)
@@ -554,6 +670,10 @@ int CGOptimize(ObjectiveWithGradient<X>& a_F, X& a_x,
 	{
 	  regularFalsiLineSearch(a_F, x, r, d, y, p, fm+fp, a_lineSearchMaxIter, 
 			      a_lineSearchInitialStep, a_lineSearchStepMaxGrow, a_lineSearchTol);
+      else if (a_lineSearchMethod == CGOPT_LINE_SEARCH_SECANTV2)
+	{
+	  secantLineSearchV2(a_F, x, r, d, y, p, fm+fp, a_lineSearchMaxIter, 
+			     a_lineSearchInitialStep, a_lineSearchStepMaxGrow, a_lineSearchTol);
 	}
       else
 	{
