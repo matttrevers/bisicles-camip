@@ -166,7 +166,7 @@ void bisectionLineSearch
     b += step;
     a_F.assign(v, x);
     a_F.incr(v, d, b);
-    aa_F.computeObjectiveAndGradient(Fm,Fp,w,v,iter,true);
+    a_F.computeObjectiveAndGradient(Fm,Fp,w,v,iter,true);
     fb = -a_F.dotProduct(w,d);
 
     pout() << " ... bisection: searching for a bracket: iter " << iter
@@ -670,6 +670,7 @@ int CGOptimize(ObjectiveWithGradient<X>& a_F, X& a_x,
 	{
 	  regularFalsiLineSearch(a_F, x, r, d, y, p, fm+fp, a_lineSearchMaxIter, 
 			      a_lineSearchInitialStep, a_lineSearchStepMaxGrow, a_lineSearchTol);
+	}
       else if (a_lineSearchMethod == CGOPT_LINE_SEARCH_SECANTV2)
 	{
 	  secantLineSearchV2(a_F, x, r, d, y, p, fm+fp, a_lineSearchMaxIter, 
